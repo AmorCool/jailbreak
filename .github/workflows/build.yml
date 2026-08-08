@@ -75,11 +75,15 @@ jobs:
       - name: Pre Version
         run: |
           set -x
-          # 去掉 tag 前缀 v，得到干净版本号（如 v3.0 -> 3.0），始终写入，避免依赖脆弱的版本比较
-          clean_version="${VERSION#v}"
-          echo "$clean_version" > ./BaseBin/_external/basebin/.version
-          sed -i '' "s/MARKETING_VERSION = .*;/MARKETING_VERSION = $clean_version;/g" ./Application/Dopamine.xcodeproj/project.pbxproj
-          echo "newVERSION=$clean_version" >> $GITHUB_ENV
+          # 版本号跟随上游 opa334/Dopamine 3.x（权威来源：basebin/.version，当前 3.0.1）
+          # 优先拉取上游最新版本号，失败则回退到仓库内 basebin/.version
+          upstream_version=$(curl -fsSL "https://raw.githubusercontent.com/opa334/Dopamine/3.x/BaseBin/_external/basebin/.version" 2>/dev/null | tr -d '[:space:]')
+          if [ -z "$upstream_version" ]; then
+            upstream_version=$(cat ./BaseBin/_external/basebin/.version 2>/dev/null | tr -d '[:space:]')
+          fi
+          echo "upstream_version=$upstream_version"
+          sed -i '' "s/MARKETING_VERSION = .*;/MARKETING_VERSION = $upstream_version;/g" ./Application/Dopamine.xcodeproj/project.pbxproj
+          echo "newVERSION=$upstream_version" >> $GITHUB_ENV
 
       - name: Pre env
         run: |
