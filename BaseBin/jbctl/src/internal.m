@@ -194,13 +194,27 @@ int jbctl_handle_internal(const char *command, int argc, char* argv[])
 		return -1;
 	}
 	else if (!strcmp(command, "startup")) {
-		protection_set_active(true);
+		// roothide merge: 对齐 rh2，不激活 preboot protection/fakelib 保护
+		// （3.x 激活它会产生 bindfs 挂载，触发 Roothide Manager "Unknown Bindfs Mount(s)" 告警）
+		//		protection_set_active(true);
+
+		JBLogDebug("jbctl startup: checking userspace panic ...");
+
 		char *panicMessage = NULL;
 		if (jbclient_watchdog_get_last_userspace_panic(&panicMessage) == 0) {
 			NSString *printMessage = [NSString stringWithFormat:@"Dopamine has protected you from a userspace panic by temporarily disabling tweak injection and triggering a userspace reboot instead. A log is available under Analytics in the Preferences app. You can reenable tweak injection in the Dopamine app.\n\nPanic message: \n%s", panicMessage];
 			CFUserNotificationDisplayAlert(0, 2/*kCFUserNotificationCautionAlertLevel*/, NULL, NULL, NULL, CFSTR("Watchdog Timeout"), (__bridge CFStringRef)printMessage, NULL, NULL, NULL, NULL);
 			free(panicMessage);
 		}
+
+/************************* roothide specific ***************************/
+		//only bootstrap after launchdhook and systemhook available
+		JBLogDebug("jbctl startup: bootstrapping launch daemons ...");
+		exec_cmd(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", "/Library/LaunchDaemons", NULL);
+
+		JBLogDebug("jbctl startup: refreshing jailbroken apps ...");
+/************************* roothide specific ***************************/
+
 		exec_cmd(JBROOT_PATH("/usr/bin/uicache"), "-a", NULL);
 	}
 	else if (!strcmp(command, "install_pkg")) {
