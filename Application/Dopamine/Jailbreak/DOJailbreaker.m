@@ -679,6 +679,29 @@ void *boomerang_server(struct boomerang_info *info)
     *errOut = [self loadBasebinTrustcache];
     if (*errOut) return;
 
+    // iOS 17+ 修复：预信任 bootstrap 的库与二进制。
+    // App 进程没有 systemhook 注入（Dopamine.app 被 should_enable_tweaks 排除），
+    // App spawn 的 killall/sh/dash 不经过 systemhook 动态信任链；iOS 17+ amfi 对 adhoc
+    // 签名库强制要求已入 trustcache（干净设备首次越狱 trustcache 为空 → code signature invalid）。
+    // 放在 loadBasebinTrustcache 之后（bootstrap 已解压、App 的 kernel primitives 仍可用），
+    // 覆盖后续 killall（iconservicesagent）与 prep_bootstrap.sh 的所有 spawn。
+    // 用 3.x 自带 jb_trustcache_add_directory（kread/kwrite 直写内核 trustcache）。
+    [[DOUIManager sharedInstance] sendLog:@"Pre-trusting bootstrap binaries" debug:NO];
+    const char *trustDirs[] = {
+        JBROOT_PATH("/usr/lib"),
+        JBROOT_PATH("/usr/bin"),
+        JBROOT_PATH("/usr/libexec"),
+        JBROOT_PATH("/bin"),
+        JBROOT_PATH("/sbin"),
+        JBROOT_PATH("/usr/local/lib"),
+        JBROOT_PATH("/usr/local/bin"),
+    };
+    for (size_t i = 0; i < sizeof(trustDirs) / sizeof(trustDirs[0]); i++) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:trustDirs[i]]]) {
+            jb_trustcache_add_directory(trustDirs[i], true);
+        }
+    }
+
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Environment") debug:NO];
     *errOut = [self injectLaunchdHook];
     if (*errOut) return;

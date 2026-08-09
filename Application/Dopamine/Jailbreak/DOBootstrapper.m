@@ -903,28 +903,8 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     if ([[NSFileManager defaultManager] fileExistsAtPath:JBROOT_PATH(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
 
-        // iOS 17+ 修复：预信任 bootstrap 的库与二进制。
-        // App 进程没有 systemhook 注入（Dopamine.app 被 should_enable_tweaks 排除），
-        // 因此 App spawn 的 sh/dash/killall 等进程不会经过 systemhook 的动态信任链；
-        // iOS 17+ 的 amfi 对 adhoc 签名库强制要求已入 trustcache，干净设备首次越狱时
-        // trustcache 为空 → 依赖库（libiosexec 等）报 code signature invalid →
-        // prep_bootstrap.sh returned 6。此处用 3.x 的 jb_trustcache_add_directory
-        // （当前 App 进程持有 exploit 建立的 kernel primitives）全量预信任 bootstrap 目录。
-        [[DOUIManager sharedInstance] sendLog:@"Pre-trusting bootstrap binaries" debug:NO];
-        const char *trustDirs[] = {
-            JBROOT_PATH("/usr/lib"),
-            JBROOT_PATH("/usr/bin"),
-            JBROOT_PATH("/usr/libexec"),
-            JBROOT_PATH("/bin"),
-            JBROOT_PATH("/sbin"),
-            JBROOT_PATH("/usr/local/lib"),
-            JBROOT_PATH("/usr/local/bin"),
-        };
-        for (size_t i = 0; i < sizeof(trustDirs) / sizeof(trustDirs[0]); i++) {
-            if ([[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:trustDirs[i]]]) {
-                jb_trustcache_add_directory(trustDirs[i], true);
-            }
-        }
+        // 注：bootstrap 预信任已提前到 DOJailbreaker 流程（loadBasebinTrustcache 之后），
+        // 覆盖此处的 prep_bootstrap.sh 与之前的 killall（iconservicesagent）。
 
         int r = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
         if (r != 0) {

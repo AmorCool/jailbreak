@@ -25,7 +25,11 @@ void enableXPCLog(void* debugLog, void* errorLog);
 
 int main(int argc, char* argv[])
 {
-	crashreporter_start();
+	// iOS 18 修复：crashreporter_start() 在独立 spawn 的进程里调 task_set_exception_ports
+	// 会触发 EXC_GUARD（GUARD_TYPE_MACH_PORT, SET_EXCEPTION_BEHAVIOR on mach port 0）→ SIGKILL。
+	// 真机崩溃栈：crashreporter_start → crashreporter_resume → task_set_exception_ports → EXC_GUARD。
+	// crashreporter 只是崩溃日志收集，对 jailbreakd 非必需，跳过（launchdhook 注入 launchd 时不受此限制）。
+	// crashreporter_start();
 
 	setJetsamLimit(50, false);
 
