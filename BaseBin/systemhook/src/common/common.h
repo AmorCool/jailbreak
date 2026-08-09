@@ -4,7 +4,10 @@
 #include "private.h"
 #include "inline.h"
 
-#define HOOK_DYLIB_PATH "/usr/lib/systemhook.dylib"
+// 3.x merge: roothide uses a randomized systemhook name (systemhook-<jbrand>.dylib),
+// so HOOK_DYLIB_PATH must be a variable (filled by roothider_main.c / launchdhook roothider.m),
+// not a fixed macro. Same semantics as roothide 2.x common.h.
+extern const char* HOOK_DYLIB_PATH;
 
 typedef enum 
 {

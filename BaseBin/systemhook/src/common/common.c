@@ -148,7 +148,9 @@ bool uninject(const char *str) {
     return result;
 }
 
-static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
+// roothide merge: must be non-static so roothider_main.c can call it via extern
+// (roothide 2.x keeps this symbol public)
+kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
 {
 	// Blacklist to ensure general system stability
 	// I don't like this but for some processes it seems neccessary
