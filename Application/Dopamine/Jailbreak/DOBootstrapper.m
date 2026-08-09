@@ -957,13 +957,38 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
 - (NSError *)deleteBootstrap
 {
+    // roothide specific: jbroot 位于 /var/containers/Bundle/Application/.jbroot-XXXX 及其 AppGroup 隐藏副本。
+    // 原 3.x 实现用 rootPath.stringByDeletingLastPathComponent 会删除整个 Application 目录 → 物理删除所有第三方 App。
+    // 这里用 is_jbroot_name() 白名单精确匹配，只删 jbroot 自身（移植自 roothide 2.x deleteBootstrap）。
     NSError *error = [self ensurePrivatePrebootIsWritable];
     if (error) return error;
-    NSString *path = [[NSString stringWithUTF8String:gSystemInfo.jailbreakInfo.rootPath] stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] removeItemAtPath:path error:&error];
-    if (error) return error;
-    [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-    return error;
+
+    NSFileManager *fm = NSFileManager.defaultManager;
+
+    // 1) 删除 /var/containers/Bundle/Application/ 下的随机 jbroot 目录
+    NSString *appDir = @"/var/containers/Bundle/Application/";
+    NSArray *appItems = [fm contentsOfDirectoryAtPath:appDir error:nil];
+    for (NSString *item in appItems) {
+        if (is_jbroot_name(item.UTF8String)) {
+            [fm removeItemAtPath:[appDir stringByAppendingPathComponent:item] error:&error];
+            if (error) return error;
+        }
+    }
+
+    // 2) 删除 AppGroup 下隐藏的 jbroot（含 /var 数据、RootHideConfig.plist 等）
+    NSString *agDir = @"/var/mobile/Containers/Shared/AppGroup/";
+    NSArray *agItems = [fm contentsOfDirectoryAtPath:agDir error:nil];
+    for (NSString *item in agItems) {
+        if (is_jbroot_name(item.UTF8String)) {
+            [fm removeItemAtPath:[agDir stringByAppendingPathComponent:item] error:&error];
+            if (error) return error;
+        }
+    }
+
+    // 3) 兼容 rootless 残留的 /var/jb
+    [fm removeItemAtPath:@"/var/jb" error:nil];
+
+    return nil;
 }
 
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didWriteData:(int64_t)bytesWritten totalBytesWritten:(int64_t)totalBytesWritten totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
