@@ -1,10 +1,7 @@
 TARGET := iphone:clang:latest:15.0
 INSTALL_TARGET_PROCESSES = lsd cfprefsd
 FINALPACKAGE = 1
-# 3.x merge: 'roothide' package scheme only exists in roothide's theos fork.
-# BaseBin/Makefile only consumes .theos/obj/roothidehooks.dylib (not the deb),
-# so fall back to the default scheme. Keep FINALPACKAGE=1 for the dylib build.
-#THEOS_PACKAGE_SCHEME = roothide
+THEOS_PACKAGE_SCHEME = roothide
 ARCHS = arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
