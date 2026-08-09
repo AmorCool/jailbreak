@@ -205,6 +205,20 @@ kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[rest
 	return (kSpawnConfigInject | kSpawnConfigTrust);
 }
 
+// roothide merge: direct syscall wrappers for the "original" posix_spawn/execve.
+// These must bypass the hooked libc symbols (litehook hooks __posix_spawn/__execve),
+// otherwise roothide_systemhook___posix_spawn_*_hook would recurse into themselves.
+// Same as roothide 2.x common.c.
+int __posix_spawn_orig(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char * const envp[restrict])
+{
+	return syscall(SYS_posix_spawn, pid, path, desc, argv, envp);
+}
+
+int __execve_orig(const char *path, char *const argv[], char *const envp[])
+{
+	return syscall(SYS_execve, path, argv, envp);
+}
+
 // 1. Ensure the binary about to be spawned and all of it's dependencies are trust cached
 // 2. Insert "DYLD_INSERT_LIBRARIES=/usr/lib/systemhook.dylib" into all binaries spawned
 // 3. Increase Jetsam limit to more sane value (Multipler defined as JETSAM_MULTIPLIER)
