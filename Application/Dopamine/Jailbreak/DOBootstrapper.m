@@ -764,6 +764,19 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         
         NSError *error = [self installPackageManagers];
         if (error) return error;
+        
+        // roothide specific: 安装 Roothide Manager（黑名单管理工具，
+        // 来自 roothideapp.deb，与 rh2 finalizeBootstrap 一致）
+        NSString *roothideManager = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
+        int rr = [self installPackage:roothideManager];
+        if (rr != 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install Roothide Manager: %d\n", rr]}];
+        }
+        
+        // 清理首次越狱完全激活前由 uicache 触发的残留快照（rh2 同样处理）
+        [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/xyz.willy.Zebra" error:nil];
+        [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/com.roothide.manager" error:nil];
+        [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/org.coolstar.SileoStore" error:nil];
     }
     
     // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带

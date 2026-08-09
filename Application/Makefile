@@ -22,6 +22,9 @@ else
 build/Build/Products/Debug-iphoneos/Dopamine.app: FORCE
 	xcodebuild -scheme Dopamine -derivedDataPath build -destination 'generic/platform=iOS' CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 endif
+	# roothide specific: 拷贝 roothide 版包管理器 deb 进 App bundle
+	# （sileo/zebra/roothideapp 由 pbxproj 或此步提供，与 rh2 Application/Makefile 一致）
+	cp -a Dopamine/Resources/*.deb build/Build/Products/Debug-iphoneos/Dopamine.app/
 
 clean:
 	rm -rf build Payload Dopamine.ipa Dopamine.tipa

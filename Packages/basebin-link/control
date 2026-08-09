@@ -2,12 +2,10 @@ Package: dopamine-basebin-link
 Name: Dopamine BaseBin Link
 Author: opa334 <opa334@protonmail.com>
 Maintainer: opa334 <opa334@protonmail.com>
-# roothide specific: 合体版用 roothide procursus bootstrap（arm64e 体系），
-# 原 iphoneos-arm64 会导致 dpkg 报架构不匹配（纯符号链接，无二进制架构限制）
 Architecture: iphoneos-arm64e
 Version: 1.0.0
 Provides: opainject
 Section: Libraries
 Priority: standard
 Homepage: https://github.com/opa334/Dopamine/tree/main/BaseBin
-Description: Symlinks to Dopamine Base Binaries
+Description: Symlinks to Dopamine Base Binaries (arm64e for roothide bootstrap compatibility)
