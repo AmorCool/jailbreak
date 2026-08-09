@@ -766,8 +766,12 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         if (error) return error;
     }
     
-    BOOL shouldInstallLibroot = [self shouldInstallPackage:@"libroot-dopamine"];
-    BOOL shouldInstallLibkrw = [self shouldInstallPackage:@"libkrw0-dopamine"];
+    // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带
+    // （libroothide.dylib 提供 jbroot()/rootfs()，libkrw.0.dylib 提供内核读写），
+    // 跳过 3.x 的 arm64 deb——它们与 roothide procursus 的 arm64e 体系架构不匹配，
+    // dpkg 会报 "package architecture (iphoneos-arm64) does not match system (iphoneos-arm64e)"
+    BOOL shouldInstallLibroot = NO;
+    BOOL shouldInstallLibkrw = NO;
     BOOL shouldInstallBasebinLink = [self shouldInstallPackage:@"dopamine-basebin-link"];
     BOOL shouldInstallLaunchctl = NO;
     if (__builtin_available(iOS 19.0, *)) {
