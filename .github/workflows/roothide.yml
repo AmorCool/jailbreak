@@ -3,7 +3,7 @@ name: build_roothide
 on:
   push:
     tags:
-      - 'rh*'
+      - 'rh[12]*'
   workflow_dispatch:
 
 permissions:
