@@ -125,14 +125,18 @@ int spawnJailbreakd()
 				// iOS 18 fix: 原 abort() 假设 xpchook 一定拦截 jailbreakd 的 checkin 消息。
 				// iOS 18 上 xpc_pipe_receive 的接收路径可能绕过 launchdhook 的 xpc_receive_mach_msg hook，
 				// 消息落入此 handler → abort() → launchd（initproc）abort → 内核 panic → 硬重启。
-				// 改为交给 jbserver 处理：gGlobalServer 由 launchdhook.dylib 导出（jbserver_global.c），
-				// 本 dylib 也可能被 jailbreakd 等无 gGlobalServer 的进程加载，故用 dlsym(RTLD_DEFAULT)
-				// 运行时查找：launchdhook 进程内解析到（正常处理 checkin），其他进程返回 NULL（安全跳过）。
+				// 改为交给 jbserver 处理：gGlobalServer（launchdhook 的 jbserver_global.c 导出）与
+				// jbserver_received_xpc_message（libjailbreak.dylib 的 jbserver.c）在 launchdhook 进程内
+				// 均可解析（launchdhook 链接 -ljailbreak）。本文件也会被编译进 systemhook.dylib
+				// （不链接 libjailbreak）和 jailbreakd，故全部用 dlsym(RTLD_DEFAULT) 运行时查找，
+				// 解析不到就安全跳过——避免任何 undefined symbol 链接错误。
 				// 注：不能用 #pragma weak / __attribute__((weak)) 声明——Mach-O 链接器对从未在任何
 				// image 定义过的符号即使 weak 声明也报 undefined symbol（build38.5 链接失败实测）。
 				struct jbserver_impl *gServer = (struct jbserver_impl *)dlsym(RTLD_DEFAULT, "gGlobalServer");
-				if (gServer != NULL) {
-					jbserver_received_xpc_message(gServer, xdict);
+				int (*receivedMsg)(struct jbserver_impl *, xpc_object_t) =
+					(int (*)(struct jbserver_impl *, xpc_object_t))dlsym(RTLD_DEFAULT, "jbserver_received_xpc_message");
+				if (gServer != NULL && receivedMsg != NULL) {
+					receivedMsg(gServer, xdict);
 				}
 				xpc_release(xdict);
 			}
