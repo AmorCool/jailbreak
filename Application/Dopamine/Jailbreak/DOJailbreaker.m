@@ -581,8 +581,9 @@ void *boomerang_server(struct boomerang_info *info)
 - (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL*)didRemove showLogs:(BOOL *)showLogs
 {
 /****************** roothide specific ****************/
-#if !BUILD_STANDALONE
-    // 3.x merge: dopamine CLI 目标（BUILD_STANDALONE=1）无 UIKit，仅真 App 有此调用
+#ifndef BUILD_STANDALONE
+    // 3.x merge: dopamine CLI 目标定义了 BUILD_STANDALONE（=0）且无 UIKit；
+    // xcodebuild App 目标未定义该宏且有 UIKit → 仅 App 编译此调用
     dispatch_async(dispatch_get_main_queue(), ^{
         [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
     });
