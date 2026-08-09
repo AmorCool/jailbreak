@@ -169,7 +169,27 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
     NSError *error = nil;
 
     [self locateJailbreakRoot];
-    
+
+    // DOPACLEAN logic to move a corrupted dopamine directory to a different path to at least make jailbreaking work again
+    // if (gSystemInfo.jailbreakInfo.rootPath) {
+    //     NSString *randomizedJailbreakPath = [NSString stringWithUTF8String:gSystemInfo.jailbreakInfo.rootPath].stringByDeletingLastPathComponent;
+    //     NSString *characterSet = @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    //     NSUInteger stringLen = 6;
+    //     NSMutableString *randomString = [NSMutableString stringWithCapacity:stringLen];
+    //     for (NSUInteger i = 0; i < stringLen; i++) {
+    //         NSUInteger randomIndex = arc4random_uniform((uint32_t)[characterSet length]);
+    //         unichar randomCharacter = [characterSet characterAtIndex:randomIndex];
+    //         [randomString appendFormat:@"%C", randomCharacter];
+    //     }
+        
+    //     NSString *activePrebootPath = [self activePrebootPath];
+    //     NSString *orphanedName = [NSString stringWithFormat:@"orphaned-%@", randomString];
+    //     NSString *orphanedPath = [activePrebootPath stringByAppendingPathComponent:orphanedName];
+    //     [[NSFileManager defaultManager] moveItemAtPath:randomizedJailbreakPath toPath:orphanedPath error:nil];
+    // }
+
+    // return [NSError errorWithDomain:@"Cleaned" code:1 userInfo:nil];
+
     if (!gSystemInfo.jailbreakInfo.rootPath || _bootstrapNeedsMigration) {
         // 3.x exploit 链需要 preboot 可写（引导文件存放），保留
         [_bootstrapper ensurePrivatePrebootIsWritable];
@@ -834,6 +854,33 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
         }];
         return nil;
     }
+}
+
+- (void)mountDictionary:(NSDictionary *)dictionary writeToFile:(NSString *)path
+{
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            [dictionary writeToFile:path atomically:YES];
+        }];
+    }];
+}
+
+- (void)fakeMount:(NSString *)path unmount:(BOOL)unmount shouldDeleteMntFiles:(BOOL)shouldDeleteMntFiles
+{
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            if (unmount) {
+                exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "unmount", path.fileSystemRepresentation, NULL);
+            } else {
+                exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "mount", path.fileSystemRepresentation, NULL);
+            }
+            
+            if (shouldDeleteMntFiles) {
+                NSString *targetPath = JBROOT_PATH([@"/mnt" stringByAppendingString:path]);
+                [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+            }
+        }];
+    }];
 }
 
 @end

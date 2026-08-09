@@ -26,7 +26,6 @@
 #import <libjailbreak/util.h>
 #import <libjailbreak/trustcache.h>
 #import <libjailbreak/trustcache_fs.h>
-#import <libjailbreak/kalloc_pt.h>
 #import <libjailbreak/jbserver_boomerang.h>
 #import <libjailbreak/signatures.h>
 #import <libjailbreak/jbclient_xpc.h>
@@ -222,10 +221,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
         if ([pplBypass load] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to load PPL bypass: %s", dlerror()]}];};
         if ([pplBypass run] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypass PPL"}];}
         // At this point we presume the PPL bypass gave us unrestricted phys write primitives
-    }
-    if (!gPrimitives.kalloc_global) {
-        // IOSurface kallocs don't work on iOS 16+, use leaked page tables as allocations instead
-        libjailbreak_kalloc_pt_init();
     }
     
     if (![DOEnvironmentManager sharedManager].isArm64e) {
@@ -647,18 +642,28 @@ void *boomerang_server(struct boomerang_info *info)
     *errOut = [self elevatePrivileges];
     if (*errOut) return;
     *errOut = [self showNonDefaultSystemApps];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     *errOut = [self ensureDevModeEnabled];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
 
     // Now that we are unsandboxed, populate the jailbreak root path
     *errOut = [[DOEnvironmentManager sharedManager] ensureJailbreakRootExists];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     
     if (removeJailbreakEnabled) {
         [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Removing Jailbreak") debug:NO];
         *errOut = [[DOEnvironmentManager sharedManager] deleteBootstrap];
         *didRemove = YES;
+        [self cleanUpPostExploitation];
         return;
     }
     
@@ -668,7 +673,10 @@ void *boomerang_server(struct boomerang_info *info)
     setenv("TERM", "xterm-256color", 1);
 
     *errOut = [[DOEnvironmentManager sharedManager] updateBootLogo];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     
     if (!tweaksEnabled) {
         printf("Creating safe mode marker file since tweaks were disabled in settings\n");
@@ -677,7 +685,10 @@ void *boomerang_server(struct boomerang_info *info)
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Loading BaseBin TrustCache") debug:NO];
     *errOut = [self loadBasebinTrustcache];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
 
     // iOS 17+ 修复：预信任 bootstrap 的库与二进制。
     // App 进程没有 systemhook 注入（Dopamine.app 被 should_enable_tweaks 排除），
@@ -704,7 +715,10 @@ void *boomerang_server(struct boomerang_info *info)
 
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Environment") debug:NO];
     *errOut = [self injectLaunchdHook];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     
 /*
     // roothide merge: 对齐 rh2，不再 bind mount 保护 preboot 目录
@@ -723,19 +737,26 @@ void *boomerang_server(struct boomerang_info *info)
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
     *errOut = [self createFakeLib];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     
     // Unsandbox iconservicesagent so that app icons can work
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/killall"), "-9", "iconservicesagent", NULL);
     
     *errOut = [self finalizeBootstrapIfNeeded];
-    if (*errOut) return;
+    if (*errOut) {
+        [self cleanUpPostExploitation];
+        return;
+    }
     
     [[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Checking For Duplicate Apps") debug:NO];
     *errOut = [self ensureNoDuplicateApps];
     if (*errOut) {
+        [self cleanUpPostExploitation];
         *showLogs = NO;
         return;
     }
@@ -913,7 +934,7 @@ void fake_mount() // zqbb_flag
 {
     // BOOL mountEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"mountEnabled" fallback:YES];
     // if (mountEnabled) {
-    NSString *filePath = @"/var/mobile/newFakePath.plist";
+    NSString *filePath = JBROOT_PATH(@"/mnt/newFakePath.plist");
     if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
     
         NSDictionary *decodedDict = [NSDictionary dictionaryWithContentsOfFile:filePath];
@@ -921,7 +942,7 @@ void fake_mount() // zqbb_flag
         if (decodedDict && [decodedDict[@"path"] isKindOfClass:[NSArray class]]) {
             NSArray *paths = decodedDict[@"path"];
             for (NSString *path in paths) {
-                exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "mount", [NSURL fileURLWithPath:path].fileSystemRepresentation, NULL);
+                [[DOEnvironmentManager sharedManager] fakeMount:path unmount:NO shouldDeleteMntFiles:NO];
             }
         }
     }
