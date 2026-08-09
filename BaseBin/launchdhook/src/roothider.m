@@ -7,8 +7,13 @@
 #include <libjailbreak/libjailbreak.h>
 #include <libjailbreak/roothider.h>
 
-#include "../systemhook/src/common.h"
-#include "../systemhook/src/envbuf.h"
+// 3.x merge: systemhook was restructured into src/common/; the 3.x common.h
+// defines HOOK_DYLIB_PATH as a macro (fixed /usr/lib/systemhook.dylib), while
+// roothide 2.x uses a variable (randomized name via jbrand). Undef the macro
+// so the roothide variable semantics are kept (jbrand filled by App layer).
+#include "../systemhook/src/common/common.h"
+#include "../systemhook/src/common/envbuf.h"
+#undef HOOK_DYLIB_PATH
 
 const char* HOOK_DYLIB_PATH = NULL;
 
