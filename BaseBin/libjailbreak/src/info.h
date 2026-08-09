@@ -43,6 +43,10 @@ struct system_info {
 		uint64_t usesPACBypass;
 		char *rootPath;
 		char *appIdentifier;
+
+		// roothide specific (merged from roothide 2.x)
+		uint64_t jbrand;
+		bool dyld_patch_enabled;
 	} jailbreakInfo;
 
 	struct {
@@ -105,6 +109,12 @@ struct system_info {
 		uint64_t libsptm_frame_type_params;
 		uint64_t txm_developer_mode_storage;
 		uint64_t txm_trustcache_root;
+
+		// roothide specific (merged from roothide 2.x)
+		uint64_t nchashtbl;
+		uint64_t nchashmask;
+		uint64_t launch_env_logging;
+		uint64_t developer_mode_status;
 	} kernelSymbol;
 
 	struct {
@@ -410,7 +420,9 @@ extern struct system_info gSystemInfo;
 #define JAILBREAK_INFO_ITERATE(ctx, iterator) \
 	iterator(ctx, jailbreakInfo.usesPACBypass); \
 	iterator(ctx, jailbreakInfo.rootPath); \
-	iterator(ctx, jailbreakInfo.appIdentifier);
+	iterator(ctx, jailbreakInfo.appIdentifier); \
+	iterator(ctx, jailbreakInfo.jbrand); \
+	iterator(ctx, jailbreakInfo.dyld_patch_enabled);
 
 #define JAILBREAK_SETTINGS_ITERATE(ctx, iterator) \
 	iterator(ctx, jailbreakSettings.markAppsAsDebugged); \
@@ -464,7 +476,11 @@ extern struct system_info gSystemInfo;
 	iterator(ctx, kernelSymbol.papt_ranges_compressed); \
 	iterator(ctx, kernelSymbol.libsptm_frame_type_params); \
 	iterator(ctx, kernelSymbol.txm_developer_mode_storage); \
-	iterator(ctx, kernelSymbol.txm_trustcache_root);
+	iterator(ctx, kernelSymbol.txm_trustcache_root); \
+	iterator(ctx, kernelSymbol.nchashtbl); \
+	iterator(ctx, kernelSymbol.nchashmask); \
+	iterator(ctx, kernelSymbol.launch_env_logging); \
+	iterator(ctx, kernelSymbol.developer_mode_status);
 
 #define KERNEL_GADGETS_ITERATE(ctx, iterator) \
 	iterator(ctx, kernelGadget.pacda); \

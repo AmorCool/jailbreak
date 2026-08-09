@@ -11,6 +11,22 @@
 #include "common.h"
 #include "log.h"
 
+// 3.x merge: roothide 2.x used jbinfo(jbrand) (random 64-bit) as the
+// "already randomized" marker. 3.x has no jbrand (fixed rootless rootPath),
+// so derive a stable marker from rootPath (FNV-1a 64).
+static inline uint64_t jbroot_marker(void)
+{
+	const char *p = jbinfo(rootPath);
+	uint64_t h = 0xcbf29ce484222325ULL;
+	if (p) {
+		while (*p) {
+			h ^= (unsigned char)*p++;
+			h *= 0x100000001b3ULL;
+		}
+	}
+	return h;
+}
+
 extern MachO* fat_find_preferred_slice(Fat* fat);
 
 extern CS_DecodedBlob *csd_superblob_find_best_code_directory(CS_DecodedSuperBlob *decodedSuperblob);
@@ -190,7 +206,7 @@ int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, v
 		}
 
 		//already patched
-		if(*rd2 == jbinfo(jbrand)) {
+		if(*rd2 == jbroot_marker()) {
 			JBLogDebug("macho already patched: %s\n", inputPath);
 			retval = csd_code_directory_calculate_hash(bestCDBlob, cdhashOut);
 			break;
@@ -205,7 +221,7 @@ int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, v
 			}
 		}
 	
-		*rd2 = jbinfo(jbrand);
+		*rd2 = jbroot_marker();
 
 		JBLogDebug("randomize cdhash with %016llX: %s\n", *rd2, inputPath);
 		

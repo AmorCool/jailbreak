@@ -418,8 +418,13 @@ char* generate_sandbox_extensions(audit_token_t *processToken, bool writable)
 
     char jbroot_base[PATH_MAX];
     char jbroot_writable[PATH_MAX];
-    snprintf(jbroot_base, sizeof(jbroot_base), "/private/var/containers/Bundle/Application/.jbroot-%016llX/", jbinfo(jbrand));
-    snprintf(jbroot_writable, sizeof(jbroot_writable), "/private/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX/", jbinfo(jbrand));
+    // 3.x: jbroot is a fixed rootless path (jbinfo(rootPath)); the roothide 2.x
+    // random jbrand path (".jbroot-%016llX") is replaced by the 3.x rootPath.
+    // (Matches jbdomain_systemwide.c extension issuance.)
+    const char *jbroot = jbinfo(rootPath);
+    if (!jbroot) jbroot = "";
+    snprintf(jbroot_base, sizeof(jbroot_base), "%s/", jbroot);
+    snprintf(jbroot_writable, sizeof(jbroot_writable), "%s/var/mobile/", jbroot);
 
     char* fileclass = writable ? "com.apple.app-sandbox.read-write" : "com.apple.app-sandbox.read";
     char *extension1 = sandbox_extension_issue_file_to_process(fileclass, jbroot_writable, 0, *processToken);
