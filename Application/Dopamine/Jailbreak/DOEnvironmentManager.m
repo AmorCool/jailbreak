@@ -21,6 +21,7 @@
 #import <libjailbreak/display.h>
 #import <libjailbreak/machine_info.h>
 #import <libjailbreak/carboncopy.h>
+#import <libjailbreak/jbclient_xpc.h>
 
 #import <IOKit/IOKitLib.h>
 #import "DOUIManager.h"
@@ -259,8 +260,21 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
 
 - (BOOL)isJailbroken
 {
-    [self updateJailbreakState];
-    return _isJailbroken;
+/************** roothide specific ***********/
+    // roothide merge: 对齐 rh2 —— 先查 roothide 判定（App 是否被 roothide 信任/白名单），
+    // 再查 CS_PLATFORM_BINARY；rootless 的 jbclient_dopamine_is_jailbroken 域在 roothide 下不可靠
+    if(!jbclient_roothide_jailbroken())
+        return NO;
+/************** roothide specific ********/
+
+    static BOOL jailbroken = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        uint32_t csFlags = 0;
+        csops(getpid(), CS_OPS_STATUS, &csFlags, sizeof(csFlags));
+        jailbroken = csFlags & CS_PLATFORM_BINARY;
+    });
+    return jailbroken;
 }
 
 - (void)setJailbroken:(BOOL)jailbroken
@@ -280,9 +294,15 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
 
 - (NSString *)jailbrokenVersion
 {
-    [self updateJailbreakState];
-    if (!_isJailbroken) return nil;
-    return _jailbrokenVersion;
+    if (!self.isJailbroken) return nil;
+
+    __block NSString *version;
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            version = [NSString stringWithContentsOfFile:JBROOT_PATH(@"/basebin/.version") encoding:NSUTF8StringEncoding error:nil];
+        }];
+    }];
+    return [[version componentsSeparatedByString:@"."] lastObject];
 }
 
 - (NSString *)systemVersion

@@ -327,6 +327,9 @@
                     [specifiers addObject:reinstallPackageManagersSpecifier];
                 }
                 if ((envManager.isJailbroken || envManager.isInstalledThroughTrollStore) && envManager.isBootstrapped) {
+/*
+                    // roothide merge: 对齐 rh2 —— 注释 "Hide Jailbreak" 按钮。
+                    // roothide 的隐藏依赖随机 jbroot 路径，不需要 rootless 的 hide/unhide（fakelib/protection）机制
                     PSSpecifier *hideUnhideJailbreakSpecifier = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:defSetter get:defGetter detail:nil cell:PSStaticTextCell edit:nil];
                     [hideUnhideJailbreakSpecifier setProperty:[DOButtonCell class] forKey:@"cellClass"];
                     [hideUnhideJailbreakSpecifier setProperty:buttonHeight forKey:@"height"];
@@ -343,6 +346,7 @@
                     if (hideJailbreakButtonShown) {
                         [specifiers addObject:hideUnhideJailbreakSpecifier];
                     }
+*/
                     
                     PSSpecifier *removeJailbreakSpecifier = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:defSetter get:defGetter detail:nil cell:PSStaticTextCell edit:nil];
                     [removeJailbreakSpecifier setProperty:@"Button_Remove_Jailbreak" forKey:@"title"];
@@ -350,6 +354,7 @@
                     [removeJailbreakSpecifier setProperty:buttonHeight forKey:@"height"];
                     [removeJailbreakSpecifier setProperty:@"trash" forKey:@"image"];
                     [removeJailbreakSpecifier setProperty:@"removeJailbreakPressed" forKey:@"action"];
+/*
                     if (hideJailbreakButtonShown) {
                         if (envManager.isJailbroken) {
                             [removeJailbreakSpecifier setProperty:DOLocalizedString(@"Hint_Hide_Jailbreak_Jailbroken") forKey:@"footerText"];
@@ -358,6 +363,7 @@
                             [removeJailbreakSpecifier setProperty:DOLocalizedString(@"Hint_Hide_Jailbreak") forKey:@"footerText"];
                         }
                     }
+*/
                     [specifiers addObject:removeJailbreakSpecifier];
                 }
             }
@@ -755,12 +761,14 @@
     [self presentViewController:changeMobilePasswordAlert animated:YES completion:nil];
 }
 
+/*
 - (void)hideUnhideJailbreakPressed
 {
     DOEnvironmentManager *envManager = [DOEnvironmentManager sharedManager];
     [envManager setJailbreakHidden:!envManager.isJailbreakHidden];
     [self reloadSpecifiers];
 }
+*/
 
 - (void)removeJailbreakPressed
 {

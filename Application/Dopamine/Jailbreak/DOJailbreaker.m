@@ -469,13 +469,20 @@ void *boomerang_server(struct boomerang_info *info)
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : @"Failed to build dyld trustcache"}];
     }
     
+/*
+    // roothide merge: 对齐 rh2 RootHide Stage —— 不再 bindfs 挂载 fakelib 到 /usr/lib
+    // （rootless 的隐藏机制；roothide 由 dyldhook 的 @loader_path/.jbroot 解析替代，
+    //  挂载会产生 Roothide Manager "Unknown Bindfs Mount(s)" 告警）
     r = [[DOEnvironmentManager sharedManager] setFakelibMounted:YES];
     if (r != 0) {
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Mounting fakelib failed with error: %d", r]}];
     }
     fake_mount();
+*/
     // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
-    setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/systemhook.dylib", 1);
+    // roothide merge: 对齐 rh2 RootHide Stage —— DYLD_INSERT_LIBRARIES 用 jbroot 内路径
+    // （rootless 的 /usr/lib/systemhook.dylib 固定路径在 roothide 随机 jbroot 下不存在）
+    setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 /*************************** roothide specific *******************/
     exec_set_patch(true); /* launchdhook injected and dyld patched,
     now we can enable dyld patching for new process */
@@ -676,6 +683,10 @@ void *boomerang_server(struct boomerang_info *info)
     *errOut = [self injectLaunchdHook];
     if (*errOut) return;
     
+/*
+    // roothide merge: 对齐 rh2，不再 bind mount 保护 preboot 目录
+    // （3.x 的 preboot protection + fakelib 挂载是 Roothide Manager "Unknown Bindfs Mount(s)" 告警来源，
+    //  roothide 的隐藏依赖随机 jbroot 路径，不需要这套 rootless 保护机制）
     // After the launchd hook is initialized, we need to make the app believe the device is jailbroken
     [[DOEnvironmentManager sharedManager] setJailbroken:YES];
     
@@ -685,6 +696,7 @@ void *boomerang_server(struct boomerang_info *info)
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Protection") debug:NO];
     *errOut = [self applyProtection];
     if (*errOut) return;
+*/
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
     *errOut = [self createFakeLib];
