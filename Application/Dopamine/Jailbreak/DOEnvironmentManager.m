@@ -52,6 +52,10 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
         _bootstrapper = [[DOBootstrapper alloc] init];
         if ([self isJailbroken]) {
             gSystemInfo.jailbreakInfo.rootPath = strdup(jbclient_get_jbroot() ?: "");
+            // roothide specific: 已越狱状态下也从 jbrand 路径解析（App 重启后 rootPath 可能为空）
+            if (strlen(gSystemInfo.jailbreakInfo.rootPath) == 0) {
+                [self locateJailbreakRoot];
+            }
         }
         else if ([self isInstalledThroughTrollStore]) {
             [self locateJailbreakRoot];
@@ -99,6 +103,15 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
 - (void)locateJailbreakRoot
 {
     if (!gSystemInfo.jailbreakInfo.rootPath) {
+        // roothide specific: 优先查找随机 jbrand 路径（/var/containers/Bundle/Application/.jbroot-xxx）
+        // 这是 roothide 的"藏"核心——jbroot 路径随机化，没有固定特征
+        NSString *jbrandRoot = find_jbroot(NO);
+        if (jbrandRoot) {
+            gSystemInfo.jailbreakInfo.rootPath = strdup(jbrandRoot.fileSystemRepresentation);
+            gSystemInfo.jailbreakInfo.jbrand = jbrand_current();
+            return;
+        }
+        
         NSString *activePrebootPath = [self activePrebootPath];
         
         NSString *randomizedJailbreakPath;
@@ -157,36 +170,14 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
     [self locateJailbreakRoot];
     
     if (!gSystemInfo.jailbreakInfo.rootPath || _bootstrapNeedsMigration) {
+        // 3.x exploit 链需要 preboot 可写（引导文件存放），保留
         [_bootstrapper ensurePrivatePrebootIsWritable];
-
-        NSString *activePrebootPath = [self activePrebootPath];
-
-        NSString *characterSet = @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        NSUInteger stringLen = 6;
-        NSMutableString *randomString = [NSMutableString stringWithCapacity:stringLen];
-        for (NSUInteger i = 0; i < stringLen; i++) {
-            NSUInteger randomIndex = arc4random_uniform((uint32_t)[characterSet length]);
-            unichar randomCharacter = [characterSet characterAtIndex:randomIndex];
-            [randomString appendFormat:@"%C", randomCharacter];
-        }
         
-        NSString *randomJailbreakFolderName = [NSString stringWithFormat:@"dopamine-%@", randomString];
-        NSString *randomizedJailbreakPath = [activePrebootPath stringByAppendingPathComponent:randomJailbreakFolderName];
-        NSString *jailbreakRootPath = [randomizedJailbreakPath stringByAppendingPathComponent:@"procursus"];
-        
-        if (_bootstrapNeedsMigration) {
-            NSString *oldRandomizedJailbreakPath = [[NSString stringWithUTF8String:gSystemInfo.jailbreakInfo.rootPath] stringByDeletingLastPathComponent];
-            [[NSFileManager defaultManager] moveItemAtPath:oldRandomizedJailbreakPath toPath:randomizedJailbreakPath error:&error];
-        }
-        else {
-            if (![[NSFileManager defaultManager] fileExistsAtPath:jailbreakRootPath]) {
-                [[NSFileManager defaultManager] createDirectoryAtPath:jailbreakRootPath withIntermediateDirectories:YES attributes:nil error:&error];
-            }
-        }
-        
-        if (!error) {
-            gSystemInfo.jailbreakInfo.rootPath = strdup(jailbreakRootPath.UTF8String);
-        }
+        // roothide specific: jbroot 用随机 jbrand 路径创建
+        // （替代 3.x 的 /private/preboot/dopamine-xxx/procursus 固定前缀；
+        //  roothide 的"藏"要求 /var/containers/Bundle/Application/.jbroot-<random>）
+        error = [_bootstrapper ensureJbrandRootExists];
+        _bootstrapNeedsMigration = NO;
     }
     
     return error;

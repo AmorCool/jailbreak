@@ -44,6 +44,180 @@ struct hfs_mount_args {
 
 NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
 
+/* ============ roothide specific: jbrand random jbroot path mechanism (from roothide 2.x DOBootstrapper.m) ============ */
+
+uint64_t jbrand_new();
+uint64_t jbrand_current();
+int is_jbroot_name(char* name);
+NSString* find_jbroot(BOOL force);
+NSString* jbrootPrefix(NSString *path);
+NSString* rootfsPrefix(NSString* path);
+
+uint64_t jbrand_new()
+{
+    uint64_t value = ((uint64_t)arc4random()) | ((uint64_t)arc4random())<<32;
+    uint8_t check = value>>8 ^ value >> 16 ^ value>>24 ^ value>>32 ^ value>>40 ^ value>>48 ^ value>>56;
+    return (value & ~0xFF) | check;
+}
+
+int is_jbrand_value(uint64_t value)
+{
+   uint8_t check = value>>8 ^ value >> 16 ^ value>>24 ^ value>>32 ^ value>>40 ^ value>>48 ^ value>>56;
+   return check == (uint8_t)value;
+}
+
+#define JB_ROOT_PREFIX ".jbroot-"
+#define JB_RAND_LENGTH  (sizeof(uint64_t)*sizeof(char)*2)
+
+int is_jbroot_name(char* name)
+{
+    if(strlen(name) != (sizeof(JB_ROOT_PREFIX)-1+JB_RAND_LENGTH))
+        return 0;
+    
+    if(strncmp(name, JB_ROOT_PREFIX, sizeof(JB_ROOT_PREFIX)-1) != 0)
+        return 0;
+    
+    char* endp=NULL;
+    uint64_t value = strtoull(name+sizeof(JB_ROOT_PREFIX)-1, &endp, 16);
+    if(!endp || *endp!='\0')
+        return 0;
+    
+    if(!is_jbrand_value(value))
+        return 0;
+    
+    return 1;
+}
+
+uint64_t resolve_jbrand_value(const char* name)
+{
+    if(strlen(name) != (sizeof(JB_ROOT_PREFIX)-1+JB_RAND_LENGTH))
+        return 0;
+    
+    if(strncmp(name, JB_ROOT_PREFIX, sizeof(JB_ROOT_PREFIX)-1) != 0)
+        return 0;
+    
+    char* endp=NULL;
+    uint64_t value = strtoull(name+sizeof(JB_ROOT_PREFIX)-1, &endp, 16);
+    if(!endp || *endp!='\0')
+        return 0;
+    
+    if(!is_jbrand_value(value))
+        return 0;
+    
+    return value;
+}
+
+NSString* find_jbroot(BOOL force)
+{
+    static NSString* cached_jbroot = nil;
+    if(!force && cached_jbroot) {
+        return cached_jbroot;
+    }
+    @synchronized(@"find_jbroot_lock")
+    {
+        //jbroot path may change when re-randomize it
+        NSString * jbroot = nil;
+        NSArray *subItems = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/containers/Bundle/Application/" error:nil];
+        for (NSString *subItem in subItems) {
+            if (is_jbroot_name(subItem.UTF8String))
+            {
+                NSString* path = [@"/var/containers/Bundle/Application/" stringByAppendingPathComponent:subItem];
+                jbroot = path;
+                break;
+            }
+        }
+        cached_jbroot = jbroot;
+    }
+    return cached_jbroot;
+}
+
+uint64_t jbrand_current()
+{
+    NSString* jbroot = find_jbroot(NO);
+    assert(jbroot != NULL);
+    return resolve_jbrand_value([jbroot lastPathComponent].UTF8String);
+}
+
+NSString* jbrootPrefix(NSString *path)
+{
+    if(!path || path.UTF8String[0]!='/') {
+        return path;
+    }
+    NSString* jbroot = find_jbroot(NO);
+    assert(jbroot != NULL); //to avoid [nil stringByAppendingString:
+    return [jbroot stringByAppendingPathComponent:path];
+}
+
+NSString* rootfsPrefix(NSString* path)
+{
+    if(!path || path.UTF8String[0]!='/') {
+        return path;
+    }
+    return [@"/rootfs/" stringByAppendingPathComponent:path];
+}
+
+/* ============ roothide specific: package sources (incl. roothide official repos) ============ */
+
+int getCFMajorVersion(void)
+{
+    if(@available(iOS 16.0, *)) {
+        return 1900;
+    }
+    
+    return ((int)kCFCoreFoundationVersionNumber / 100) * 100;
+}
+
+#define DEFAULT_SOURCES "\
+Types: deb\n\
+URIs: https://yourepo.com/\n\
+Suites: ./\n\
+Components:\n\
+\n\
+Types: deb\n\
+URIs: https://repo.chariz.com/\n\
+Suites: ./\n\
+Components:\n\
+\n\
+Types: deb\n\
+URIs: https://havoc.app/\n\
+Suites: ./\n\
+Components:\n\
+\n\
+Types: deb\n\
+URIs: http://apt.thebigboss.org/repofiles/cydia/\n\
+Suites: stable\n\
+Components: main\n\
+\n\
+Types: deb\n\
+URIs: https://roothide.github.io/\n\
+Suites: ./\n\
+Components:\n\
+\n\
+Types: deb\n\
+URIs: https://roothide.github.io/procursus\n\
+Suites: iphoneos-arm64e/%d\n\
+Components: main\n\
+\n\
+Types: deb\n\
+URIs: https://github.com/roothide/roothide.github.io/releases/download/%d/\n\
+Suites: ./\n\
+Components:\n\
+"
+
+#define ZEBRA_SOURCES "\
+# Zebra Sources List\n\
+deb https://getzbra.com/repo/ ./\n\
+deb https://repo.chariz.com/ ./\n\
+deb https://yourepo.com/ ./\n\
+deb https://havoc.app/ ./\n\
+deb https://roothide.github.io/ ./\n\
+deb https://roothide.github.io/procursus iphoneos-arm64e/%d main\n\
+deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
+\n\
+"
+
+/* ============ end roothide specific ============ */
+
 @implementation DOBootstrapper
 
 - (instancetype)init
@@ -224,6 +398,85 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
     [_bootstrapDownloadTask resume];
 }*/
 
+- (NSError *)ensureJbrandRootExists
+{
+    // roothide specific: jbroot 位于 /var/containers/Bundle/Application/.jbroot-<random jbrand>
+    // （3.x 原本用 /private/preboot/dopamine-xxx/procursus 固定前缀；roothide 的"藏"要求
+    //  随机 jbrand 路径，每次重装/重随机化都变，App 检测不到固定特征）
+    NSString *jbrootPath = find_jbroot(NO);
+    if (!jbrootPath) {
+        jbrootPath = [NSString stringWithFormat:@"/var/containers/Bundle/Application/.jbroot-%016llX", jbrand_new()];
+        if (mkdir(jbrootPath.fileSystemRepresentation, 0755) != 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating jbroot failed: %s", strerror(errno)]}];
+        }
+        if (chown(jbrootPath.fileSystemRepresentation, 0, 0) != 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"chown jbroot failed: %s", strerror(errno)]}];
+        }
+        find_jbroot(YES); // refresh cache
+    }
+    
+    if (gSystemInfo.jailbreakInfo.rootPath) free(gSystemInfo.jailbreakInfo.rootPath);
+    gSystemInfo.jailbreakInfo.rootPath = strdup(jbrootPath.UTF8String);
+    gSystemInfo.jailbreakInfo.jbrand = jbrand_current();
+    
+    return nil;
+}
+
+- (int)buildPackageSources:(void (^)(NSError *))completion
+{
+    // roothide specific: 写入含 roothide 官方源的包源列表（3.x 原版没有 roothide 源）
+    NSFileManager* fm = NSFileManager.defaultManager;
+    
+    if([[NSString stringWithFormat:@(DEFAULT_SOURCES), getCFMajorVersion(), getCFMajorVersion()] writeToFile:jbrootPrefix(@"/etc/apt/sources.list.d/default.sources") atomically:YES encoding:NSUTF8StringEncoding error:nil] == NO) {
+        completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : @"Failed to write default.sources"}]);
+        return -1;
+    }
+    
+    if(![fm fileExistsAtPath:jbrootPrefix(@"/var/mobile/Library/Application Support/xyz.willy.Zebra")])
+    {
+        NSDictionary* attr = @{NSFilePosixPermissions:@(0755), NSFileOwnerAccountID:@(501), NSFileGroupOwnerAccountID:@(501)};
+        [fm createDirectoryAtPath:jbrootPrefix(@"/var/mobile/Library/Application Support/xyz.willy.Zebra") withIntermediateDirectories:YES attributes:attr error:nil];
+    }
+    
+    if([[NSString stringWithFormat:@(ZEBRA_SOURCES), getCFMajorVersion(), getCFMajorVersion()] writeToFile:jbrootPrefix(@"/var/mobile/Library/Application Support/xyz.willy.Zebra/sources.list") atomically:YES encoding:NSUTF8StringEncoding error:nil] == NO) {
+        completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : @"Failed to write Zebra sources.list"}]);
+        return -1;
+    }
+    
+    return 0;
+}
+
+- (void)hideJbrootVarToAppGroup:(NSString *)jbrootPath
+{
+    // roothide specific: 把 jbroot 的可写数据（/var）藏到 AppGroup 目录，
+    // jbroot 里只留符号链接——目录结构更不显眼，是"藏"的一部分
+    // （原逻辑来自 rh2 InstallBootstrap，jbroot_secondary 同样用随机 jbrand 命名）
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *jbrootSecondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand_current()];
+    
+    if (![fm fileExistsAtPath:jbrootSecondary]) {
+        mkdir(jbrootSecondary.fileSystemRepresentation, 0755);
+        chown(jbrootSecondary.fileSystemRepresentation, 0, 0);
+    }
+    
+    NSString *jbrootVar = [jbrootPath stringByAppendingPathComponent:@"/var"];
+    if ([fm fileExistsAtPath:jbrootVar] && ![fm fileExistsAtPath:[jbrootSecondary stringByAppendingPathComponent:@"/var"]]) {
+        [fm moveItemAtPath:jbrootVar toPath:[jbrootSecondary stringByAppendingPathComponent:@"/var"] error:nil];
+    }
+    
+    // jbroot/var -> private/var -> AppGroup/var
+    [fm removeItemAtPath:[jbrootPath stringByAppendingPathComponent:@"/private/var"] error:nil];
+    [fm createSymbolicLinkAtPath:[jbrootPath stringByAppendingPathComponent:@"/private/var"] withDestinationPath:[jbrootSecondary stringByAppendingPathComponent:@"/var"] error:nil];
+    [fm createSymbolicLinkAtPath:jbrootVar withDestinationPath:@"private/var" error:nil];
+    
+    // jbroot/tmp -> AppGroup/var/tmp
+    [fm removeItemAtPath:[jbrootSecondary stringByAppendingPathComponent:@"/var/tmp"] error:nil];
+    if ([fm fileExistsAtPath:[jbrootPath stringByAppendingPathComponent:@"/tmp"]]) {
+        [fm moveItemAtPath:[jbrootPath stringByAppendingPathComponent:@"/tmp"] toPath:[jbrootSecondary stringByAppendingPathComponent:@"/var/tmp"] error:nil];
+    }
+    [fm createSymbolicLinkAtPath:[jbrootPath stringByAppendingPathComponent:@"/tmp"] withDestinationPath:@"var/tmp" error:nil];
+}
+
 - (void)extractBootstrap:(NSString *)path withCompletion:(void (^)(NSError *))completion
 {
     NSString *bootstrapTar = [@"/var/tmp" stringByAppendingPathComponent:@"bootstrap.tar"];
@@ -233,11 +486,23 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
         return;
     }
     
-    decompressionError = [self extractTar:bootstrapTar toPath:@"/"];
+    // roothide specific: 解压到随机 jbrand jbroot 路径（rh2 方式）
+    // roothide 的 bootstrap 是相对 jbroot 结构（./usr ./var），
+    // 官方 rootless bootstrap（/var/jb 前缀）与 jbrand 机制不兼容
+    NSString *jbrootPath = find_jbroot(NO);
+    if (!jbrootPath) {
+        completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : @"Failed to locate jbroot for bootstrap extraction"}]);
+        return;
+    }
+    
+    decompressionError = [self extractTar:bootstrapTar toPath:jbrootPath];
     if (decompressionError) {
         completion(decompressionError);
         return;
     }
+    
+    // roothide specific: var 数据藏到 AppGroup
+    [self hideJbrootVarToAppGroup:jbrootPath];
     
     [[NSData data] writeToFile:JBROOT_PATH(@"/.installed_dopamine") atomically:YES];
     completion(nil);
@@ -356,31 +621,13 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
             return;
         }
         
-        NSString *defaultSources = @"Types: deb\n"
-            @"URIs: https://rootless.002599.xyz/\n"
-            @"Suites: ./\n"
-            @"Components:\n"
-            @"\n"
-            @"Types: deb\n"
-            @"URIs: https://repo.chariz.com/\n"
-            @"Suites: ./\n"
-            @"Components:\n"
-            @"\n"
-            @"Types: deb\n"
-            @"URIs: https://havoc.app/\n"
-            @"Suites: ./\n"
-            @"Components:\n"
-            @"\n"
-            @"Types: deb\n"
-            @"URIs: http://apt.thebigboss.org/repofiles/cydia/\n"
-            @"Suites: stable\n"
-            @"Components: main\n"
-            @"\n"
-            @"Types: deb\n"
-            @"URIs: https://ellekit.space/\n"
-            @"Suites: ./\n"
-            @"Components:\n";
+        // roothide specific: 源列表含 roothide 官方源（3.x 原版只有 rootless.002599.xyz 等）
+        NSString *defaultSources = [NSString stringWithFormat:@(DEFAULT_SOURCES), getCFMajorVersion(), getCFMajorVersion()];
         [defaultSources writeToFile:JBROOT_PATH(@"/etc/apt/sources.list.d/default.sources") atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        
+        // roothide specific: Zebra 源列表（rh2 同样写入）
+        NSString *zebraSources = [NSString stringWithFormat:@(ZEBRA_SOURCES), getCFMajorVersion(), getCFMajorVersion()];
+        [zebraSources writeToFile:JBROOT_PATH(@"/var/mobile/Library/Application Support/xyz.willy.Zebra/sources.list") atomically:NO encoding:NSUTF8StringEncoding error:nil];
         
         NSString *mobilePreferencesPath = JBROOT_PATH(@"/var/mobile/Library/Preferences");
         if (![[NSFileManager defaultManager] fileExistsAtPath:mobilePreferencesPath]) {
