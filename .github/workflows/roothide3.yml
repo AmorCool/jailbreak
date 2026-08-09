@@ -123,18 +123,6 @@ jobs:
         run: |
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
-          # xpc_connection_get_pid 在 iOS 上符号真实存在但头文件标 API_UNAVAILABLE(ios)（硬性 error，无法用 -Wno 关闭）。
-          # rh2 的做法是删整个 xpc 头，但那会破坏 3.x jbserver.c 需要的 xpc_dictionary_copy/set_mach_send 声明。
-          # 精确手术：只移除 xpc_connection_get_pid 声明前的 API_UNAVAILABLE 标记（对 Xcode SDK 与 theos SDK 都处理）。
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          for XPC in $SDK/usr/include/xpc/xpc.h $THEOS/sdks/iPhoneOS16.5.sdk/usr/include/xpc/xpc.h; do
-            [ -f "$XPC" ] || continue
-            echo "=== before: $XPC ==="
-            grep -n -B1 -A2 "xpc_connection_get_pid" "$XPC" | head -12
-            perl -0pi -e 's/(API_UNAVAILABLE\([^)]*\)\s*\n\s*)(?=pid_t\s*\n?\s*xpc_connection_get_pid\b)//g; s/(pid_t\s*\n?\s*xpc_connection_get_pid\b[^;]*;)\s*\n?\s*API_UNAVAILABLE\([^)]*\)/$1/g;' "$XPC"
-            echo "=== after: $XPC ==="
-            grep -n -B1 -A2 "xpc_connection_get_pid" "$XPC" | head -12
-          done
           gmake -j$(sysctl -n hw.physicalcpu) NIGHTLY=1
           mv Application/Dopamine.tipa Dopamine_roothide_${{ env.newVERSION }}_${{ env.commitCount }}_${{ env.msT }}_${{ env.SHASH }}.tipa
 
