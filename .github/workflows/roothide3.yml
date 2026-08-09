@@ -68,7 +68,7 @@ jobs:
 
       - name: Pre Bundleid
         run: |
-          sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./Application/Dopamine/Jailbreak/DOPreferenceManager.m
+          # 3.0.4 merge: DOPreferenceManager.m 已在上游重构中删除，bundle id 由 pbxproj 覆盖
           sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./Application/Dopamine.xcodeproj/project.pbxproj
           sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./BaseBin/jbctl/src/main.m
 
@@ -106,9 +106,7 @@ jobs:
         run: |
           sed -i '' "s/AAAA/${{ env.newVERSION }}  ${{ env.commitCount }}  ${{ env.msT }}/g" ./Application/Dopamine/UI/DOMainViewController.m
           sed -i '' "s/AAAB/不要为了升级而放弃越狱的乐趣~/g" ./Application/Dopamine/UI/DOMainViewController.m
-          sed -i '' "s/opa334/w2599/g" ./Application/Dopamine/UI/Settings/DOCreditsViewController.m
-          sed -i '' "s/opa334/w2599/g" ./Application/Dopamine/UI/Update/DOUpdateViewController.m
-          sed -i '' "s/opa334/w2599/g" ./Application/Dopamine/UI/DOUIManager.m
+          # 3.0.4 merge: DOCreditsViewController/DOUpdateViewController/DOUIManager 已在上游重构中删除
 
       - name: Pre Bootstraps
         run: |
