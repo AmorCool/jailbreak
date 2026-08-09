@@ -13,8 +13,10 @@ roothidehooks_FILES = $(wildcard *.x) $(wildcard *.c) $(wildcard *.m)
 # 3.x BaseBin/Makefile 会在新 SDK（iOS 17.4+，如 CI 的 Xcode 26.5）存在 xpc.modulemap 时删除 .include/xpc，
 # 导致 roothidehooks 落到 SDK 的 xpc.h → xpc_connection_get_pid 标 API_UNAVAILABLE(ios) 编译失败。
 # 私有头里该函数是 __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_5_0)，无 unavailable 标记，可正常编译。
+# -fno-modules: 私有 xpc/module.modulemap 与 SDK 的 XPC module 重名会触发 redefinition（新 SDK 才有），
+# 且 module 模式强制头文件自包含（au_asid_t 需显式 include bsm/audit.h），禁用 module 模式两者皆消。
 # jbserver.c（libjailbreak）不受影响，仍用 SDK 头的 xpc_dictionary_copy/set_mach_send 声明。
-roothidehooks_CFLAGS = -Werror -fobjc-arc -I../_external/include
+roothidehooks_CFLAGS = -Werror -fobjc-arc -fno-modules -I../_external/include
 roothidehooks_LDFLAGS = -rpath @loader_path/.jbroot/Library/Frameworks -rpath @loader_path/fallback -L../libjailbreak -ljailbreak
 roothidehooks_INSTALL_PATH = /basebin
 
