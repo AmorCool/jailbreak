@@ -15,6 +15,7 @@
 #import <sys/mount.h>
 #import <dlfcn.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import "NSString+Version.h"
 
 #define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.3"
@@ -755,6 +756,99 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     return [installedVersion numericalVersionRepresentation] < [bundledVersion numericalVersionRepresentation];
 }
 
+/* ============ roothide specific: 环境修正（幂等，每次越狱都跑） ============ */
+
+- (NSString *)systemBuildVersion
+{
+    // 取系统 build 号，如 iOS 18.0 = "22A3354"，用于写 firmware 虚拟包版本
+    size_t size = 0;
+    sysctlbyname("kern.osversion", NULL, &size, NULL, 0);
+    if (size == 0) return nil;
+    char *buf = (char *)malloc(size);
+    if (sysctlbyname("kern.osversion", buf, &size, NULL, 0) != 0) {
+        free(buf);
+        return nil;
+    }
+    NSString *ver = [NSString stringWithUTF8String:buf];
+    free(buf);
+    return ver;
+}
+
+- (BOOL)firmwarePackagePresent
+{
+    NSString *statusPath = JBROOT_PATH(@"/Library/dpkg/status");
+    NSString *status = [NSString stringWithContentsOfFile:statusPath encoding:NSUTF8StringEncoding error:nil];
+    if (!status) return NO;
+    // 匹配独立段落的 "Package: firmware"
+    NSRange r = [status rangeOfString:@"\nPackage: firmware\n"];
+    if (r.location != NSNotFound) return YES;
+    // 兼容文件开头无前导换行的情况
+    if ([status hasPrefix:@"Package: firmware\n"]) return YES;
+    return NO;
+}
+
+- (void)ensureFirmwarePackage
+{
+    // roothide 的 firmware 虚拟包本应由 prep_bootstrap.sh 里的 /usr/libexec/firmware 生成。
+    // 但 3.x 版 Dopamine App 以真实根运行（roothide 2.x 里 App 是以 jbroot 为根的），
+    // prep 里的 /usr/libexec/firmware（相对真实根）找不到 → firmware 包未注册 →
+    // 所有依赖 firmware 的包（sileo / roothideapp / RootHide Patcher / 任意 tweak）都装失败。
+    // 这里用 jbroot 绝对路径显式运行 firmware 二进制（等价于 rh2 里 App 以 jbroot 为根的行为），
+    // 跑完再校验；若仍缺失，手写为 Library/dpkg/status 追加 firmware 条目兜底。
+    if ([self firmwarePackagePresent]) return;
+
+    // 1) 尝试用 jbroot 路径运行 firmware 二进制（它会用 roothide 运行时把包写进 jbroot/Library/dpkg/status）
+    exec_cmd_trusted(JBROOT_PATH("/usr/libexec/firmware"), NULL);
+    if ([self firmwarePackagePresent]) return;
+
+    // 2) 兜底：手动追加 firmware 虚拟包条目（版本取系统 build，满足 >=15.0 等依赖）
+    NSString *statusPath = JBROOT_PATH(@"/Library/dpkg/status");
+    NSString *status = [NSString stringWithContentsOfFile:statusPath encoding:NSUTF8StringEncoding error:nil];
+    if (!status) return;
+    NSString *ver = [self systemBuildVersion];
+    if (!ver) ver = @"22A3354";
+    NSMutableString *append = [NSMutableString string];
+    if (![status hasSuffix:@"\n"]) [append appendString:@"\n"];
+    if (![status hasSuffix:@"\n\n"]) [append appendString:@"\n"];
+    [append appendFormat:@"Package: firmware\nStatus: install ok installed\nPriority: required\nSection: System\nInstalled-Size: 0\nVersion: %@\nArchitecture: iphoneos-arm64e\nDescription: iOS firmware\n\n", ver];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:statusPath];
+    if (fh) {
+        [fh seekToEndOfFile];
+        [fh writeData:[append dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
+    }
+}
+
+- (void)ensureToolchainInstalled
+{
+    // bootstrap 不含 file/gawk/libxar1/plutil 等基础工具链（RootHide Patcher 依赖它们），
+    // 这些包在 roothide procursus 源里，但越狱时未必刷新过源/有网络。
+    // 直接把对应 deb 打包进 App，用 --force-depends 幂等安装（installPackage 已带该参数）。
+    NSArray *toolchain = @[@"file.deb", @"gawk.deb", @"libxar1.deb", @"plutil.deb", @"libmagic1.deb", @"libmpfr6.deb"];
+    for (NSString *deb in toolchain) {
+        NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [self installPackage:path];
+        }
+    }
+}
+
+- (void)ensureRoothideManagerInstalled
+{
+    // Roothide Manager（黑名单管理工具，com.roothide.manager）幂等安装 + 刷新图标。
+    // 每次越狱都跑：既修复首次没装上的情况，也保证图标被 uicache 注册。
+    NSString *roothideManager = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:roothideManager]) {
+        [self installPackage:roothideManager];
+    }
+    // 刷新 RootHide Manager 图标（只刷单个 app，避免 3.x 里 uicache -a 被注释掉的全局刷新可能触发的问题）
+    NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
+    if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
+        NSString *rootHideApp = JBROOT_PATH(@"/Applications/RootHide.app");
+        exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", rootHideApp.fileSystemRepresentation, NULL);
+    }
+}
+
 - (NSError *)finalizeBootstrap
 {
     // Initial setup on first jailbreak
@@ -768,19 +862,21 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         NSError *error = [self installPackageManagers];
         if (error) return error;
         
-        // roothide specific: 安装 Roothide Manager（黑名单管理工具，
-        // 来自 roothideapp.deb，与 rh2 finalizeBootstrap 一致）
-        NSString *roothideManager = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
-        int rr = [self installPackage:roothideManager];
-        if (rr != 0) {
-            return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install Roothide Manager: %d\n", rr]}];
-        }
-        
         // 清理首次越狱完全激活前由 uicache 触发的残留快照（rh2 同样处理）
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/xyz.willy.Zebra" error:nil];
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/com.roothide.manager" error:nil];
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/org.coolstar.SileoStore" error:nil];
     }
+    
+    // ===== roothide 环境修正（每次越狱都跑，幂等）=====
+    // 3.x 版 Dopamine App 以真实根运行（非 jbroot 为根），导致 prep_bootstrap.sh 里的
+    // /usr/libexec/firmware 跑不到 → firmware 虚拟包没生成；bootstrap 也不含 file/gawk/
+    // libxar1/plutil 等基础工具链。这些必须在越狱环境里补齐，否则任何依赖 firmware 或
+    // 这些工具的包（sileo / roothideapp / RootHide Patcher / 任意 tweak）都会装失败。
+    [[DOUIManager sharedInstance] sendLog:@"Fixing roothide environment" debug:NO];
+    [self ensureFirmwarePackage];
+    [self ensureToolchainInstalled];
+    [self ensureRoothideManagerInstalled];
     
     // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带
     // （libroothide.dylib 提供 jbroot()/rootfs()，libkrw.0.dylib 提供内核读写），
