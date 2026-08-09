@@ -758,14 +758,16 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
 /* ============ roothide specific: 环境修正（幂等，每次越狱都跑） ============ */
 
-- (NSString *)systemBuildVersion
+- (NSString *)firmwareVersion
 {
-    // 取系统 build 号，如 iOS 18.0 = "22A3354"，用于写 firmware 虚拟包版本
+    // 取 iOS 营销版本号，如 "18.0"，用于 firmware 虚拟包。
+    // Sileo / tweak 的依赖写的是 firmware(>=12.2)、firmware(>=15.0) 等，
+    // 必须提供纯数字版本号，build 号（如 22A3354）会让 dpkg 解析成意外结果。
     size_t size = 0;
-    sysctlbyname("kern.osversion", NULL, &size, NULL, 0);
+    sysctlbyname("kern.osproductversion", NULL, &size, NULL, 0);
     if (size == 0) return nil;
     char *buf = (char *)malloc(size);
-    if (sysctlbyname("kern.osversion", buf, &size, NULL, 0) != 0) {
+    if (sysctlbyname("kern.osproductversion", buf, &size, NULL, 0) != 0) {
         free(buf);
         return nil;
     }
@@ -774,17 +776,35 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     return ver;
 }
 
-- (BOOL)firmwarePackagePresent
+- (BOOL)firmwarePackageValid
 {
     NSString *statusPath = JBROOT_PATH(@"/Library/dpkg/status");
     NSString *status = [NSString stringWithContentsOfFile:statusPath encoding:NSUTF8StringEncoding error:nil];
     if (!status) return NO;
-    // 匹配独立段落的 "Package: firmware"
-    NSRange r = [status rangeOfString:@"\nPackage: firmware\n"];
-    if (r.location != NSNotFound) return YES;
-    // 兼容文件开头无前导换行的情况
-    if ([status hasPrefix:@"Package: firmware\n"]) return YES;
-    return NO;
+    // 匹配 firmware 段落并取出 Version 字段
+    NSRange range = [status rangeOfString:@"\nPackage: firmware\n" options:0];
+    if (range.location == NSNotFound) {
+        if ([status hasPrefix:@"Package: firmware\n"]) {
+            range = NSMakeRange(0, 0);
+        } else {
+            return NO;
+        }
+    }
+    NSUInteger start = range.location + range.length;
+    NSUInteger end = [status rangeOfString:@"\n\n" options:0 range:NSMakeRange(start, status.length - start)].location;
+    if (end == NSNotFound) end = status.length;
+    NSString *paragraph = [status substringWithRange:NSMakeRange(start, end - start)];
+    NSRange verRange = [paragraph rangeOfString:@"\nVersion: "];
+    if (verRange.location == NSNotFound) return NO;
+    NSUInteger verStart = verRange.location + verRange.length;
+    NSUInteger verEnd = [paragraph rangeOfString:@"\n" options:0 range:NSMakeRange(verStart, paragraph.length - verStart)].location;
+    if (verEnd == NSNotFound) verEnd = paragraph.length;
+    NSString *version = [paragraph substringWithRange:NSMakeRange(verStart, verEnd - verStart)];
+    // 必须是 x.y[.z] 格式的纯数字版本，才能满足 firmware(>=12.2) 这种依赖
+    if ([version rangeOfString:@"."].location == NSNotFound) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
+    NSCharacterSet *inverted = [allowed invertedSet];
+    return [version rangeOfCharacterFromSet:inverted].location == NSNotFound;
 }
 
 - (void)ensureFirmwarePackage
@@ -794,29 +814,28 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // prep 里的 /usr/libexec/firmware（相对真实根）找不到 → firmware 包未注册 →
     // 所有依赖 firmware 的包（sileo / roothideapp / RootHide Patcher / 任意 tweak）都装失败。
     // 这里用 jbroot 绝对路径显式运行 firmware 二进制（等价于 rh2 里 App 以 jbroot 为根的行为），
-    // 跑完再校验；若仍缺失，手写为 Library/dpkg/status 追加 firmware 条目兜底。
-    if ([self firmwarePackagePresent]) return;
+    // 跑完再校验；若仍缺失或版本格式不对，手写替换 firmware 条目。
+    if ([self firmwarePackageValid]) return;
 
     // 1) 尝试用 jbroot 路径运行 firmware 二进制（它会用 roothide 运行时把包写进 jbroot/Library/dpkg/status）
     exec_cmd_trusted(JBROOT_PATH("/usr/libexec/firmware"), NULL);
-    if ([self firmwarePackagePresent]) return;
+    if ([self firmwarePackageValid]) return;
 
-    // 2) 兜底：手动追加 firmware 虚拟包条目（版本取系统 build，满足 >=15.0 等依赖）
+    // 2) 兜底：把 firmware 段落删掉后重新写入一个格式正确的条目（版本取 iOS 营销版本）
     NSString *statusPath = JBROOT_PATH(@"/Library/dpkg/status");
     NSString *status = [NSString stringWithContentsOfFile:statusPath encoding:NSUTF8StringEncoding error:nil];
     if (!status) return;
-    NSString *ver = [self systemBuildVersion];
-    if (!ver) ver = @"22A3354";
-    NSMutableString *append = [NSMutableString string];
-    if (![status hasSuffix:@"\n"]) [append appendString:@"\n"];
-    if (![status hasSuffix:@"\n\n"]) [append appendString:@"\n"];
-    [append appendFormat:@"Package: firmware\nStatus: install ok installed\nPriority: required\nSection: System\nInstalled-Size: 0\nVersion: %@\nArchitecture: iphoneos-arm64e\nDescription: iOS firmware\n\n", ver];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:statusPath];
-    if (fh) {
-        [fh seekToEndOfFile];
-        [fh writeData:[append dataUsingEncoding:NSUTF8StringEncoding]];
-        [fh closeFile];
-    }
+    NSString *ver = [self firmwareVersion];
+    if (!ver) ver = @"18.0";
+    // 删除已有的 firmware 段落（防止旧 build 写入了 build 号版本）
+    NSMutableString *cleaned = [NSMutableString stringWithString:status];
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"(^|\n)Package: firmware\n.*?\n\n" options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+    [regex replaceMatchesInString:cleaned options:0 range:NSMakeRange(0, cleaned.length) withTemplate:@""];
+    // 确保以双换行结尾
+    if (![cleaned hasSuffix:@"\n"]) [cleaned appendString:@"\n"];
+    if (![cleaned hasSuffix:@"\n\n"]) [cleaned appendString:@"\n"];
+    [cleaned appendFormat:@"Package: firmware\nStatus: install ok installed\nPriority: required\nSection: System\nInstalled-Size: 0\nVersion: %@\nArchitecture: iphoneos-arm64e\nDescription: iOS firmware\n\n", ver];
+    [cleaned writeToFile:statusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 - (void)ensureToolchainInstalled
