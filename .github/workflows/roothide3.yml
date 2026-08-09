@@ -121,8 +121,11 @@ jobs:
 
       - name: Build tipa
         run: |
+          set -x
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
+          # 与 rh2 roothide.yml 一致：移除 Xcode SDK 的 xpc 头（xpc_connection_get_pid 等 macOS 私有 API 在 iOS 上实际存在但被标 unavailable）
+          rm -rf $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc.modulemap
           gmake -j$(sysctl -n hw.physicalcpu) NIGHTLY=1
           mv Application/Dopamine.tipa Dopamine_roothide_${{ env.newVERSION }}_${{ env.commitCount }}_${{ env.msT }}_${{ env.SHASH }}.tipa
 
