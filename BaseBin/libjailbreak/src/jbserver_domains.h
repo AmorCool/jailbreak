@@ -57,6 +57,23 @@ enum {
     JBS_DOPAMINE_DROP_ROOT,
 };
 
+// Domain: RootHide
+// roothide-specific domain (blacklist / dyld patch / jailbreakd lookup / trust recurse)
+// NOTE: this is the 1-based index into gGlobalServer .domains[]. In roothide 2.x it was 5,
+// but 3.x already assigns 5 to JBS_DOMAIN_DOPAMINE, so roothide is appended as 6.
+#define JBS_DOMAIN_ROOTHIDE 6
+enum {
+    JBS_ROOTHIDE_JAILBROKEN_CHECK = 1,
+    JBS_ROOTHIDE_PALEHIDE_PRESENT,
+    JBS_ROOTHIDE_BLACKLIST_CHECK,
+    JBS_ROOTHIDE_JAILBREAKD_LOOKUP,
+    JBS_ROOTHIDE_JAILBREAKD_CHECKIN,
+    JBS_ROOTHIDE_TRUST_LIBRARY_RECURSE,
+    JBS_ROOTHIDE_TRUST_EXECUTABLE_RECURSE,
+    JBS_ROOTHIDE_DYLD_PATCH_ENABLED_GET,
+    JBS_ROOTHIDE_DYLD_PATCH_ENABLED_SET,
+};
+
 #define JBS_BOOMERANG_DONE 42
 
 #endif
