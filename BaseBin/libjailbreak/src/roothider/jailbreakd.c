@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <pthread.h>
+#include <dlfcn.h>
 #include <xpc/xpc.h>
 #include <mach/mach.h>
 #include <bsm/libbsm.h>
@@ -12,11 +13,6 @@
 #include "jailbreakd.h"
 #include "common.h"
 #include "log.h"
-
-// gGlobalServer 由 launchdhook 的 jbserver_global.c 提供（launchdhook.dylib）；
-// 本文件（libjailbreak.dylib）也会被 jailbreakd 等无 gGlobalServer 的进程加载，
-// 用 #pragma weak 使符号在缺失时解析为 NULL，避免 jailbreakd 加载失败。
-#pragma weak gGlobalServer
 
 #ifdef ENABLE_LOGS
 static void (*JBDLogDebugFunction)(const char *format, ...);
@@ -129,11 +125,14 @@ int spawnJailbreakd()
 				// iOS 18 fix: 原 abort() 假设 xpchook 一定拦截 jailbreakd 的 checkin 消息。
 				// iOS 18 上 xpc_pipe_receive 的接收路径可能绕过 launchdhook 的 xpc_receive_mach_msg hook，
 				// 消息落入此 handler → abort() → launchd（initproc）abort → 内核 panic → 硬重启。
-				// 改为交给 jbserver 处理：gGlobalServer 是 launchdhook 提供的弱符号（#pragma weak），
-				// 在 launchdhook 进程里解析到（处理 checkin），在 jailbreakd 等无 gGlobalServer
-				// 的进程里为 NULL（安全跳过）。
-				if (&gGlobalServer != NULL) {
-					jbserver_received_xpc_message(&gGlobalServer, xdict);
+				// 改为交给 jbserver 处理：gGlobalServer 由 launchdhook.dylib 导出（jbserver_global.c），
+				// 本 dylib 也可能被 jailbreakd 等无 gGlobalServer 的进程加载，故用 dlsym(RTLD_DEFAULT)
+				// 运行时查找：launchdhook 进程内解析到（正常处理 checkin），其他进程返回 NULL（安全跳过）。
+				// 注：不能用 #pragma weak / __attribute__((weak)) 声明——Mach-O 链接器对从未在任何
+				// image 定义过的符号即使 weak 声明也报 undefined symbol（build38.5 链接失败实测）。
+				struct jbserver_impl *gServer = (struct jbserver_impl *)dlsym(RTLD_DEFAULT, "gGlobalServer");
+				if (gServer != NULL) {
+					jbserver_received_xpc_message(gServer, xdict);
 				}
 				xpc_release(xdict);
 			}
