@@ -33,6 +33,8 @@
 #import <libjailbreak/jbclient_mach.h>
 #import <libjailbreak/kcall_arm64.h>
 #import <libjailbreak/basebin_gen.h>
+// 3.x merge (roothide): roothider API (otherJailbreakActived/exec_set_patch/randomizeAndLoadBasebinTrustcache/ensure_dyld_trustcache)
+#import <libjailbreak/roothider.h>
 #import <CoreServices/LSApplicationProxy.h>
 #import <sys/utsname.h>
 #import "spawn.h"
@@ -320,6 +322,14 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
     csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
     if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
     
+/**************************** roothide specific ********************/
+    proc_csflags_set(proc, CS_INSTALLER);
+
+    if(otherJailbreakActived(true)) {
+        return [NSError errorWithDomain:@"RootHide" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Your device currently has another jailbreak activated, please reboot device."}];
+    }
+/***********************************************************************/
+    
     return nil;
 }
 
@@ -466,6 +476,15 @@ void *boomerang_server(struct boomerang_info *info)
     fake_mount();
     // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
     setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/systemhook.dylib", 1);
+/*************************** roothide specific *******************/
+    exec_set_patch(true); /* launchdhook injected and dyld patched,
+    now we can enable dyld patching for new process */
+
+    // don't use dyld-in-cache due to dyldhooks
+    setenv("DYLD_IN_CACHE", "0", 1);
+    // don't load tweak during jailbreaking
+    setenv("DISABLE_TWEAKS", "1", 1);
+/******************************** roothide specific *************************/
     return nil;
 }
 
@@ -561,6 +580,15 @@ void *boomerang_server(struct boomerang_info *info)
 
 - (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL*)didRemove showLogs:(BOOL *)showLogs
 {
+/****************** roothide specific ****************/
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
+    });
+	
+    exec_set_patch(false);
+/****************** roothide specific ****************/
+
+
     BOOL removeJailbreakEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
     BOOL tweaksEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"tweakInjectionEnabled" fallback:YES];
     BOOL idownloadEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"idownloadEnabled" fallback:NO];
@@ -583,6 +611,13 @@ void *boomerang_server(struct boomerang_info *info)
     
     gSystemInfo.jailbreakSettings.markAppsAsDebugged = appJITEnabled;
     gSystemInfo.jailbreakSettings.jetsamMultiplier = jetsamMultiplierOption ? (jetsamMultiplierOption.doubleValue / 2) : 0;
+    
+    
+/****************** roothide specific ****************/
+    //initialize it before injecting launchdhook
+    gSystemInfo.jailbreakInfo.dyld_patch_enabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"dyldPatchEnabled" fallback:NO];
+/****************** roothide specific ****************/
+    
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Building Phys R/W Primitive") debug:NO];
     *errOut = [self buildPhysRWPrimitive];

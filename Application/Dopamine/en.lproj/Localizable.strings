@@ -136,3 +136,8 @@
 
 "System_Uptime_Format" = "uptime: %ddays %dh %dm %ds";
 "Settings_Disable_Update" = "Disable Update";
+
+/* roothide */
+"Enable dyld patch" = "Enable dyld patch";
+"Dyld Patch(Spinlock Fix)" = "Dyld Patch (Spinlock Fix)";
+"When spinlock fix is enabled, app extensions of blacklisted apps will be disabled and may also cause spinlock panics when the blacklisted app is in foreground/background.\n\nYou can first try disabling tweak injection for the app in Choicy (spinlock fix still works), and only blacklist the app if that doesn't work." = "When spinlock fix is enabled, app extensions of blacklisted apps will be disabled and may also cause spinlock panics when the blacklisted app is in foreground/background.\n\nYou can first try disabling tweak injection for the app in Choicy (spinlock fix still works), and only blacklist the app if that doesn't work.";
