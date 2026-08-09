@@ -60,9 +60,17 @@ int registerServerPort()
 	mach_port_t self_host = mach_host_self();
 	kern_return_t kr = host_set_special_port(self_host, HOST_LAUNCHCTL_PORT, gJailbreakdPort);
 	mach_port_deallocate(mach_task_self(), self_host);
+	if (kr != KERN_SUCCESS) {
+		// iOS 18 fix: HOST_LAUNCHCTL_PORT 可能被系统保护，host_set_special_port 失败。
+		// FAST_GET 只是优化——客户端会降级到 jbclient_jailbreakd_lookup()（传统 XPC 查询），
+		// 因此这里不致命；原代码返回 -1 会让 launchdhook 的 assert(initJailbreakd==0)
+		// 崩溃 → launchd（initproc）abort → 内核 panic → 硬重启。
+		JBLogError("host_set_special_port(HOST_LAUNCHCTL_PORT) failed: %x,%s (fallback to lookup)", kr, mach_error_string(kr));
+	}
+	return 0;
+#else
+	return 0;
 #endif
-
-	return kr==KERN_SUCCESS ? 0 : -1;
 }
 
 #ifdef JAILBREAKD_CLIENT_PORT_FAST_GET

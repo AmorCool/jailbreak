@@ -174,7 +174,13 @@ void roothide_launchd_postinit(bool firstLoad)
 	MSHookFunction(&xpc_pipe_routine_reply, (void*)new_xpc_pipe_routine_reply, &orig_xpc_pipe_routine_reply);
 
 	// load jailbreakd after applying hooks
-	assert(initJailbreakd(firstLoad) == 0);
+	// iOS 18 fix: initJailbreakd 失败（registerServerPort/spawn）不再 assert——
+	// assert 会让 launchd（initproc）abort → 内核 panic → 硬重启。改为记录错误
+	// 继续（jailbreakd 不可用时后续可重试/重连，至少不崩系统）。
+	int jbdInitRet = initJailbreakd(firstLoad);
+	if (jbdInitRet != 0) {
+		JBLogError("initJailbreakd failed: %d", jbdInitRet);
+	}
 }
 
 #include <dlfcn.h>
