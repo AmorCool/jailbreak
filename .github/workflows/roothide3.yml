@@ -134,6 +134,16 @@ jobs:
           path: |
             *.tipa
 
+      - name: Prepare Release Body
+        run: |
+          echo "## Dopamine 3.x + roothide (合体版)" > body.txt
+          echo "" >> body.txt
+          echo "版本：${{ env.newVERSION }}（跟随上游 opa334/Dopamine 3.x）" >> body.txt
+          echo "构建时间戳：${{ env.logT }}" >> body.txt
+          echo "commit：${{ env.SHASH }}" >> body.txt
+          echo "" >> body.txt
+          echo "3.x 底座 + roothide 隐藏能力（per-app 越狱痕迹隐藏）" >> body.txt
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
