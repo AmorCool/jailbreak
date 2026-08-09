@@ -693,7 +693,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 - (int)installPackage:(NSString *)packagePath
 {
     if (getuid() == 0) {
-        return exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"), "-i", packagePath.fileSystemRepresentation, NULL);
+        // roothide specific: --force-depends 绕过依赖检查（如 sileo 依赖的 firmware 包
+        // 不在 roothide bootstrap 里，dpkg 默认拒绝配置；firmware 只是固件版本标记包，
+        // 运行时不需要，后续从源里更新时会自动补装）
+        return exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"), "--force-depends", "-i", packagePath.fileSystemRepresentation, NULL);
     }
     else {
         // idk why but waitpid sometimes fails and this returns -1, so we just ignore the return value

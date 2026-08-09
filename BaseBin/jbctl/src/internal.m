@@ -207,7 +207,9 @@ int jbctl_handle_internal(const char *command, int argc, char* argv[])
 		if (argc > 1) {
 			extern char **environ;
 			const char *dpkg = JBROOT_PATH("/usr/bin/dpkg");
-			int r = execve(dpkg, (char *const *)(const char *[]){dpkg, "-i", argv[1], NULL}, environ);
+			// roothide specific: --force-depends（与 App 层 installPackage 一致，
+			// 绕过 sileo 等对 firmware 虚拟包的依赖检查，firmware 由源提供）
+			int r = execve(dpkg, (char *const *)(const char *[]){dpkg, "--force-depends", "-i", argv[1], NULL}, environ);
 			return r;
 		}
 		return -1;
