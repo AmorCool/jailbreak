@@ -476,6 +476,34 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         [fm moveItemAtPath:[jbrootPath stringByAppendingPathComponent:@"/tmp"] toPath:[jbrootSecondary stringByAppendingPathComponent:@"/var/tmp"] error:nil];
     }
     [fm createSymbolicLinkAtPath:[jbrootPath stringByAppendingPathComponent:@"/tmp"] withDestinationPath:@"var/tmp" error:nil];
+
+    // 对齐 roothide 2.x (rh2 DOBootstrapper.m:1012):
+    // jbrootSecondary/.jbroot 自指链接。/var 搬到 AppGroup 后，
+    // /var/lib/dpkg -> .jbroot/Library/dpkg 这条链需要 jbrootSecondary/.jbroot
+    // 指向真实 jbroot，否则 dpkg/apt 访问 /var/lib/dpkg 会断链，
+    // Sileo 报 "/var/lib/dpkg/lock-frontend" 错误。
+    [self ensureJbrootSelfLink];
+}
+
+- (void)ensureJbrootSelfLink
+{
+    // 幂等地确保 AppGroup 隐藏副本目录的 .jbroot 自指链接存在且指向当前 jbroot。
+    // jbrand 变化（重启）后旧链接会失效，必须在每次越狱时校验/重建。
+    NSString *jbrootPath = [NSString stringWithUTF8String:get_jbroot() ?: ""];
+    if (!jbrootPath.length) return;
+    NSString *jbrootSecondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand_current()];
+    NSString *selfLink = [jbrootSecondary stringByAppendingPathComponent:@".jbroot"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:selfLink]) {
+        // 指向已变（jbrand 变化）则重建
+        NSString *dest = [fm destinationOfSymbolicLinkAtPath:selfLink error:nil];
+        if (![dest isEqualToString:jbrootPath]) {
+            [fm removeItemAtPath:selfLink error:nil];
+        }
+    }
+    if (![fm fileExistsAtPath:selfLink]) {
+        [fm createSymbolicLinkAtPath:selfLink withDestinationPath:jbrootPath error:nil];
+    }
 }
 
 - (void)extractBootstrap:(NSString *)path withCompletion:(void (^)(NSError *))completion
@@ -896,6 +924,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
+    [self ensureJbrootSelfLink];
     
     // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带
     // （libroothide.dylib 提供 jbroot()/rootfs()，libkrw.0.dylib 提供内核读写），
