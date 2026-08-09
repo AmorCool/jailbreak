@@ -16,10 +16,14 @@ roothidehooks_FILES = $(wildcard *.x) $(wildcard *.c) $(wildcard *.m)
 # -fno-modules 放 OBJCFLAGS（编译命令里 ALL_CFLAGS 之后）：私有 xpc/module.modulemap 与 SDK 的 XPC module
 # 重名会触发 redefinition（仅新 SDK 有 xpc.modulemap），且 module 模式强制头文件自包含（au_asid_t 需显式
 # include bsm/audit.h），禁用 module 模式两者皆消。放 CFLAGS 会被 theos 的 -fmodules（OBJCFLAGS）覆盖。
+# -lroothide：roothide.h 的 modulemap 带 link "roothide" 指令，modules 开启时 clang 自动链 libroothide
+# （提供 jbroot/rootfs/jbrand 等符号，运行时由 @loader_path/.jbroot/usr/lib/libroothide.dylib 提供）。
+# 因 -fno-modules 关闭了自动链接，需手动补 -lroothide（THEOS_PACKAGE_SCHEME=roothide 时搜索路径
+# $THEOS/vendor/lib/iphone/roothide/ 含 libroothide.tbd）。rh2 无此行是因为其 modules 未关。
 # jbserver.c（libjailbreak）不受影响，仍用 SDK 头的 xpc_dictionary_copy/set_mach_send 声明。
 roothidehooks_CFLAGS = -Werror -fobjc-arc -I../.include -I../_external/include
 roothidehooks_OBJCFLAGS = -fno-modules
-roothidehooks_LDFLAGS = -rpath @loader_path/.jbroot/Library/Frameworks -rpath @loader_path/fallback -L../libjailbreak -ljailbreak
+roothidehooks_LDFLAGS = -rpath @loader_path/.jbroot/Library/Frameworks -rpath @loader_path/fallback -L../libjailbreak -ljailbreak -lroothide
 roothidehooks_INSTALL_PATH = /basebin
 
 include $(THEOS_MAKE_PATH)/tweak.mk
