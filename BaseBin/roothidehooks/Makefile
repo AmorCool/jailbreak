@@ -20,10 +20,12 @@ roothidehooks_FILES = $(wildcard *.x) $(wildcard *.c) $(wildcard *.m)
 # （提供 jbroot/rootfs/jbrand 等符号，运行时由 @loader_path/.jbroot/usr/lib/libroothide.dylib 提供）。
 # 因 -fno-modules 关闭了自动链接，需手动补 -lroothide（THEOS_PACKAGE_SCHEME=roothide 时搜索路径
 # $THEOS/vendor/lib/iphone/roothide/ 含 libroothide.tbd）。rh2 无此行是因为其 modules 未关。
+# -framework Security：palera1n.x 用 kSecAttrAccessibleWhenUnlockedThisDeviceOnly 等 Security 常量，
+# 新 Xcode 链接器（26.x）默认不允许未定义符号（rh2 的 Xcode 15 宽松），显式链上 Security 框架。
 # jbserver.c（libjailbreak）不受影响，仍用 SDK 头的 xpc_dictionary_copy/set_mach_send 声明。
 roothidehooks_CFLAGS = -Werror -fobjc-arc -I../.include -I../_external/include
 roothidehooks_OBJCFLAGS = -fno-modules
-roothidehooks_LDFLAGS = -rpath @loader_path/.jbroot/Library/Frameworks -rpath @loader_path/fallback -L../libjailbreak -ljailbreak -lroothide
+roothidehooks_LDFLAGS = -rpath @loader_path/.jbroot/Library/Frameworks -rpath @loader_path/fallback -framework Security -L../libjailbreak -ljailbreak -lroothide
 roothidehooks_INSTALL_PATH = /basebin
 
 include $(THEOS_MAKE_PATH)/tweak.mk
