@@ -34,6 +34,16 @@ typedef NS_ENUM(NSInteger, BootstrapErrorCode) {
 - (NSError *)finalizeBootstrap;
 - (NSError *)deleteBootstrap;
 
+// roothide specific: jbrand 随机 jbroot 路径机制
+- (NSError *)ensureJbrandRootExists;
+- (int)buildPackageSources:(void (^)(NSError *))completion;
+
 @end
+
+// roothide specific: jbrand 路径函数（供 DOEnvironmentManager 等跨文件调用）
+NSString *find_jbroot(BOOL force);
+uint64_t jbrand_current();
+NSString *jbrootPrefix(NSString *path);
+NSString *rootfsPrefix(NSString *path);
 
 NS_ASSUME_NONNULL_END
