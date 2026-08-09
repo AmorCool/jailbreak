@@ -13,8 +13,11 @@
 
 
 //MAKE_TRAMPOLINE(strncmp)
-MAKE_TRAMPOLINE(strlcpy)
-MAKE_TRAMPOLINE(strlcat)
+// 3.x merge: strlcpy/strlcat trampoline 已在 3.x main.S 定义（3.x 代码用这两个），
+// rh2 的 main.S 定义的是 strcpy/strcat，故 rh2 的 roothider.S 需保留这两个；3.x 合并后重复，
+// 注释掉（MachOMerger 的 trampoline 是全局符号，roothider.c 的调用由 main.S 的 trampoline 覆盖）。
+//MAKE_TRAMPOLINE(strlcpy)
+//MAKE_TRAMPOLINE(strlcat)
 
 .global _MACHOMERGER_ORIG__ZN5dyld46Loader18expandAtLoaderPathERNS_12RuntimeStateEPKcRKNS0_11LoadOptionsEPKS0_bPc
 .global _MACHOMERGER_HOOKTRAMPOLINE__ZN5dyld46Loader18expandAtLoaderPathERNS_12RuntimeStateEPKcRKNS0_11LoadOptionsEPKS0_bPc
