@@ -897,6 +897,26 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     }
 }
 
+- (void)ensureExtraPackagesInstalled
+{
+    // 用户指定的预装包：AppSync Unified（ai.akemi.appsyncunified，允许装未签名/伪签名 app）
+    // + TrollStore Lite（com.opa334.trollstorelite，roothide 版 TrollStore，装 /Applications/TrollStoreLite.app）。
+    // 幂等安装（installPackage 带 --force-depends），每次越狱都跑；缺文件时静默跳过。
+    NSArray *extraDebs = @[@"appsync.deb", @"tslite.deb"];
+    for (NSString *deb in extraDebs) {
+        NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [self installPackage:path];
+        }
+    }
+    // TSLite 是 /Applications 里的 app，装完刷新图标
+    NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
+    if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
+        NSString *tsliteApp = JBROOT_PATH(@"/Applications/TrollStoreLite.app");
+        exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", tsliteApp.fileSystemRepresentation, NULL);
+    }
+}
+
 - (NSError *)finalizeBootstrap
 {
     // Initial setup on first jailbreak
@@ -929,6 +949,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
+    [self ensureExtraPackagesInstalled];
     [self ensureJbrootSelfLink];
     
     // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带
