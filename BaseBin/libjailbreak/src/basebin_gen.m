@@ -148,14 +148,24 @@ int basebin_generate_internal(NSString *originUsrLibPath, NSString *basebinPath,
 
 	carbonCopy(dyldOrigPath, dyldInflightPath);
 
-	// roothide merge (build38.15): 恢复 dyld patch（iOS 17+ 也需要）。
-	// build38.14 曾跳过 patch（iOS 17+ 用原版 dyld），但真机测试发现：
-	// 原版 dyld 的 getAMFI 返回真实值 → DYLD_INSERT_LIBRARIES（launchdhook）
-	// 被 dyld 拒绝 → dyld abort → launchd 崩 → panic（新崩溃点，panic 103734）。
-	// patched dyld（getAMFI→0xff 允许 DYLD_* 变量）是 3.x 官方机制，必需。
-	// iOS18+ merge 的 dyldhook 兼容性问题由 dyldhook Makefile 处理（排除
-	// roothider.c/S，见 build38.15 dyldhook 修改）。
-	NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
+	// roothide merge (build38.17): iOS 18 跳过 dyld patch，改用 jailbreakd 线程注入。
+	// 真机证据（多次 panic，iPhone XS iOS 18.0）：patched dyld（getAMFI→0xff +
+	// dyldhook merge）初始化时自身崩溃（launchd 调 dyld API → dyld 崩），
+	// 且 getAMFI patch 在 iOS 18.0 上无法使 DYLD_INSERT_LIBRARIES 生效
+	// （38.16 崩溃日志 binaryImages 无 launchdhook 镜像）。
+	// 现改为：iOS 17+ 不 patch dyld（原版），launchdhook 由 jailbreakd
+	// LaunchDaemon 启动时通过 task_for_pid + thread_create 线程注入。
+	// iOS 15-16 行为不变。
+	BOOL shouldPatchDyld = YES;
+	if (@available(iOS 17.0, *)) {
+		shouldPatchDyld = NO;
+	}
+	if (shouldPatchDyld) {
+		NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
+		if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
+		if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
+		if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
+	}
 	if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
 	if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
 	if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
