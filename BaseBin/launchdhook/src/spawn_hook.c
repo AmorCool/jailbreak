@@ -11,6 +11,7 @@
 #include <litehook.h>
 #include "jbserver/jbserver_local.h"
 #include "hookd_provider.h"
+#include "bootlog.h"
 extern char **environ;
 
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
@@ -74,6 +75,7 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		uint32_t bufsize = sizeof(executablePath);
 		_NSGetExecutablePath(&executablePath[0], &bufsize);
 		if (!strcmp(path, executablePath)) {
+			bootlog("SPAWN_HOOK detected userspace reboot reinsertion (path=%s)", path);
 			// This spawn will perform a userspace reboot...
 			// Instead of the ordinary hook, we want to reinsert this dylib
 			// This has already been done in envp so we only need to call the original posix_spawn

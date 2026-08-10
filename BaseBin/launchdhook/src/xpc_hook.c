@@ -7,6 +7,7 @@
 #include <substrate.h>
 #include <libjailbreak/jbserver.h>
 #include <litehook.h>
+#include "bootlog.h"
 
 mach_msg_header_t* dispatch_mach_msg_get_msg(void *message, size_t *_Nullable size_ptr);
 int jbserver_received_mach_message(audit_token_t *auditToken, struct jbserver_mach_msg *jbsMachMsg);
@@ -52,6 +53,7 @@ int xpc_receive_mach_msg_hook(void *msg, void *a2, void *a3, void *a4, xpc_objec
 	int r = xpc_receive_mach_msg_orig(msg, a2, a3, a4, xOut);
 	if (!wasProcessed && r == 0 && xOut && *xOut) {
 		if (jbserver_received_xpc_message(&gGlobalServer, *xOut) == 0) {
+			bootlog("XPC_HOOK handled a jailbreak-domain message");
 			// Returning non null here makes launchd disregard this message
 			// For jailbreak messages we have the logic to handle them
 			xpc_release(*xOut);

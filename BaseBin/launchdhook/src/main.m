@@ -29,6 +29,7 @@
 #import "update.h"
 #import "jbserver/jbserver_local.h"
 #import "asl.h"
+#import "bootlog.h"
 
 bool gInEarlyBoot = true;
 
@@ -102,6 +103,12 @@ __attribute__((constructor)) static void initializer(void)
 {
 	crashreporter_start();
 
+	bootlog("INIT enter pid=%d DOPAMINE_INITIALIZED=%s DYLD_INSERT_LIBRARIES=%s LAUNCHD_UUID=%s",
+		getpid(),
+		getenv("DOPAMINE_INITIALIZED") ?: "NULL",
+		getenv("DYLD_INSERT_LIBRARIES") ?: "NULL",
+		getenv("LAUNCHD_UUID") ?: "NULL");
+
 /********** roothide specfic ********/
 	roothide_launchd_preinit();
 /********** roothide specfic ********/
@@ -172,6 +179,8 @@ __attribute__((constructor)) static void initializer(void)
 		firstLoad = true;
 	}
 
+	bootlog("INIT firstLoad=%d (DOPAMINE_INITIALIZED %s)", firstLoad, getenv("DOPAMINE_INITIALIZED") ?: "NULL");
+
 	int err = boomerang_recoverPrimitives(firstLoad, true);
 	if (err != 0) {
 		char msg[1000];
@@ -236,4 +245,6 @@ __attribute__((constructor)) static void initializer(void)
 /********** roothide specfic ********/
 	roothide_launchd_postinit(firstLoad);
 /********** roothide specfic ********/
+
+	bootlog("INIT done pid=%d firstLoad=%d", getpid(), firstLoad);
 }

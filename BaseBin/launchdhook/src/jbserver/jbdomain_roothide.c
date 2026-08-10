@@ -1,5 +1,6 @@
 #include <signal.h>
 #include "jbserver_global.h"
+#include "bootlog.h"
 
 #include <libjailbreak/libjailbreak.h>
 #include <libjailbreak/roothider.h>
@@ -75,6 +76,7 @@ static int roothide_trust_library_recurse(const char *libraryPath, const char *c
 
 static int roothide_jailbroken_check(audit_token_t *callerToken, bool* jailbroken)
 {
+	bootlog("JAILBROKEN_CHECK called from pid=%d", callerToken ? audit_token_to_pid(*callerToken) : -1);
 	*jailbroken = true;
 	return 0;
 }

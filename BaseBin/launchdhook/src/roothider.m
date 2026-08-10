@@ -6,6 +6,7 @@
 
 #include <libjailbreak/libjailbreak.h>
 #include <libjailbreak/roothider.h>
+#import "bootlog.h"
 
 // 3.x merge: systemhook was restructured into src/common/; the 3.x common.h
 // defines HOOK_DYLIB_PATH as a macro (fixed /usr/lib/systemhook.dylib), while
@@ -102,6 +103,7 @@ void roothide_launchd_preinit()
 
 void roothide_launchd_postinit(bool firstLoad)
 {
+	bootlog("POSTINIT enter firstLoad=%d", firstLoad);
 	JBLogDebug("roothide_launchd_postinit: firstLoad=%d", firstLoad);
 
 	launchdhookFirstLoad = firstLoad;
@@ -195,6 +197,7 @@ void roothide_launchd_postinit(bool firstLoad)
 	// assert 会让 launchd（initproc）abort → 内核 panic → 硬重启。改为记录错误
 	// 继续（jailbreakd 不可用时后续可重试/重连，至少不崩系统）。
 	int jbdInitRet = initJailbreakd(firstLoad);
+	bootlog("POSTINIT initJailbreakd ret=%d firstLoad=%d", jbdInitRet, firstLoad);
 	if (jbdInitRet != 0) {
 		JBLogError("initJailbreakd failed: %d", jbdInitRet);
 	}
