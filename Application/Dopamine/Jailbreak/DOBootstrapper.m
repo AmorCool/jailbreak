@@ -902,7 +902,16 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 用户指定的预装包：AppSync Unified（ai.akemi.appsyncunified，允许装未签名/伪签名 app）
     // + TrollStore Lite（com.opa334.trollstorelite，roothide 版 TrollStore，装 /Applications/TrollStoreLite.app）。
     // 幂等安装（installPackage 带 --force-depends），每次越狱都跑；缺文件时静默跳过。
-    NSArray *extraDebs = @[@"appsync.deb", @"tslite.deb"];
+    // build38.35 新增 roothide 插件运行时三件套（顺序即依赖顺序）：
+    //   1. patchloader.deb（com.roothide.patchloader，RootHide Dynamic Patches Loader，
+    //      产物 /usr/lib/roothidepatch.dylib，systemhook 的 roothider_main.c 要 dlopen 它。
+    //      bootstrap 不含它（rh2 时代由用户在 Sileo 手动装），缺它 → DynamicPatches 不加载 →
+    //      rootless 插件装了也无效。官方源最新 0.0.8。）
+    //   2. rootless-compat.deb（rootless 路径兼容层，AutoPatches.dylib 做 /var/jb 重定向，
+    //      Depends com.roothide.patchloader>=0.0.4，用户设备导出版 2.0 = 官方最新）
+    //   3. ellekit.deb（mobilesubstrate 替身：Provides mobilesubstrate(=99) + 提供
+    //      libsubstrate/TweakInject 符号链，rootless 插件的依赖检查与链接需要。官方源 1.2。）
+    NSArray *extraDebs = @[@"appsync.deb", @"tslite.deb", @"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb"];
     for (NSString *deb in extraDebs) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -919,24 +928,106 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
 - (void)ensureSileoAndAptDirectories
 {
-    // roothide 下 Sileo/apt 的缓存与列表目录必须存在于 jbroot 内，否则 Sileo 刷新源时
-    // 创建源缓存目录失败，报“文件夹 'xxx-_Packages' 不存在”（用户实测 roothide.github.io-_Packages）。
-    // 根因：rh2 同版 Sileo（org.coolstar.sileo 2.5.1-12）在 rh2 下正常，因为 rh2 的 Dopamine App
-    // 以 jbroot 为根，整套环境会自动准备好这些目录；我们的 3.x App 以真实根运行，jbroot 内这些
-    // 目录可能从未被创建（prep_bootstrap.sh 不负责建，Sileo 自己在某些路径下也不会建中间目录）。
-    // 这里每次越狱幂等 mkdir -p 补齐。目录路径按 roothider 的 JBROOT_PATH(/var/mobile) 机制落在 jbroot 内。
-    NSArray *dirs = @[
-        @"/var/mobile/Library/Caches/Sileo/Sources",  // Sileo 源缓存目录（报错指向的就是它）
-        @"/var/mobile/Library/Caches/Sileo",
-        @"/var/cache/apt/archives/partial",           // apt 下载缓存
-        @"/var/cache/apt/lists/partial",              // apt 源列表缓存
-        @"/var/lib/apt/lists/partial",
-        @"/var/log/apt",
+    // Sileo 报“文件夹 'xxx-_Packages' 不存在”（实测 roothide.github.io-_Packages），
+    // 经核对 Sileo 源码，出错的那次写入是
+    //   DependencyResolverAccelerator.getDependencies() 第 167 行
+    //   try sourcesData.append(to: newSourcesFile)
+    //   newSourcesFile = depResolverPrefix + "/<repo>_Packages"
+    //   depResolverPrefix = CommandPath.sileolists = <jbroot>/var/lib/apt/sileolists
+    // → 真正缺失的父目录是 <jbroot>/var/lib/apt/sileolists。
+    //
+    // 该目录本应由 Sileo 自己在 DependencyResolverAccelerator.init() 里建：
+    //   spawnAsRoot(mkdir -p sileolists) + chown -R mobile:mobile + chmod -R 0755
+    // 但 spawnAsRoot 依赖 persona 提权（posix_spawnattr_set_persona_np(99, OVERRIDE) +
+    // persona_uid=0，iOS 17.6+ 还要经 systemhook 改写 + launchdhook 的
+    // JBS_SYSTEMWIDE_PERSONA_FIX 事后改 ucred）。这条链上任何一环降级，子进程就以
+    // mobile 身份运行，mkdir 在 root:wheel 的 /var/lib/apt 下直接 EACCES，
+    // 目录建不出来 → 写文件报“文件夹不存在”。
+    //
+    // 这里用越狱 App 的 root 权限（exec_cmd_trusted 必定是 root）提前把目录建好，
+    // 并按 Sileo 自己的做法 chown mobile:mobile，这样即使 Sileo 的 spawnAsRoot 失效，
+    // 目录也存在且 mobile 可写。Sileo init() 里会先 rm -rf 再 mkdir：
+    // 提权正常时它自己重建，提权失效时 rm 也一并失败，我们建的目录得以保留，两种情况都成立。
+    //
+    // 【38.31 的修复为何无效】那一版建的是 JBROOT_PATH("/var/mobile/Library/Caches/Sileo")：
+    //   1) 清单里根本没有 sileolists，没命中真正报错的目录；
+    //   2) Sileo 的 app cache 走的是 rootfs 上真实的 /var/mobile/Library/Caches/Sileo
+    //      （见 Sileo AppDelegate.swift 注释 "but why stil got file:///var/mobile/Library/Caches/Sileo"），
+    //      套 JBROOT_PATH 后建到了 jbroot 内，是个没人用的空目录；
+    //   3) 该 cache 由 Sileo 以 mobile 身份自建，用 root 去建反而会把 owner 变成
+    //      root:wheel 挡住 Sileo。故此处移除对它的处理。
+
+    // 1) root 拥有的路径下、但需要 mobile 写入的目录 → 建完 chown mobile:mobile
+    NSArray *mobileOwnedDirs = @[
+        @"/var/lib/apt/sileolists",             // 图三报错的父目录
+        @"/var/lib/apt/sileolists/operations",  // buildOperations() 用 try! 创建，父目录缺失会直接崩溃
     ];
-    for (NSString *d in dirs) {
+    for (NSString *d in mobileOwnedDirs) {
+        NSString *p = JBROOT_PATH(d);
+        exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", p.fileSystemRepresentation, NULL);
+        exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", p.fileSystemRepresentation, NULL);
+        exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", p.fileSystemRepresentation, NULL);
+    }
+
+    // 2) apt / dpkg 自用目录，保持 root:wheel。
+    //    /Library/dpkg/updates 是 dpkg 的 status journal 目录，Sileo 与 apt 判定
+    //    “dpkg 被中断”读的就是它，缺失会让 dpkg 无法写事务日志。
+    NSArray *rootOwnedDirs = @[
+        @"/var/lib/apt/lists/partial",
+        @"/var/cache/apt/archives/partial",
+        @"/var/log/apt",
+        @"/Library/dpkg/updates",
+        @"/Library/dpkg/triggers",
+        @"/Library/dpkg/parts",
+    ];
+    for (NSString *d in rootOwnedDirs) {
         NSString *p = JBROOT_PATH(d);
         exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", p.fileSystemRepresentation, NULL);
     }
+}
+
+- (void)ensureDpkgConsistent
+{
+    // 【图一/图二：Sileo 弹“dpkg 被中断”】
+    // 判定条件（Sileo DpkgWrapper.dpkgInterrupted()，与 apt debSystem::CheckUpdates() 一致）：
+    //   <jbroot>/Library/dpkg/updates/ 下存在文件名全为数字的 status journal。
+    // journal 是 dpkg 事务日志，正常退出（哪怕 postinst 返回非 0）都会被清理，
+    // 只有 dpkg 进程被硬杀才会残留——例如提权降级后 dpkg 中途失败、
+    // userspace 重启、掉电。dpkg 每次以写模式启动都会先 replay 再清空 journal。
+    //
+    // 所以这里在所有装包动作之后跑一次 --configure -a，一次解决两个弹窗：
+    //   1) replay 并清空 journal → “dpkg 被中断”消失；
+    //   2) 把 unpacked / half-configured 的包配置完 → Sileo 的 foundBroken 弹窗消失。
+    //
+    // --force-depends / --force-configure-any 是必须的：roothide bootstrap 里
+    // 没有 mobilesubstrate、也没有 ellekit（已核对 bootstrap 的 Library/dpkg/status，
+    // 78 个包中两者皆无），而 appsync 的 Depends 写着 mobilesubstrate (>= 0.9.5100)。
+    // 不加 force，dpkg 会拒绝配置这类包，反而把 broken 状态留在数据库里。
+    //
+    // 返回值忽略：个别包 postinst 失败不应中断整个越狱流程。
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"),
+                     "--force-depends", "--force-configure-any", "--configure", "-a", NULL);
+}
+
+- (void)writeDpkgDiagnostics
+{
+    // 把 dpkg / Sileo 相关的现场状态落盘，便于用 AFC（爱思、iMazing 等）
+    // 从 /var/mobile/Media/ 直接取出，不必装 Filza 也能定位问题。
+    // 追加写入，保留历次越狱记录。
+    NSString *jbroot = JBROOT_PATH(@"");
+    NSString *script = [NSString stringWithFormat:
+        @"exec >> /var/mobile/Media/dopamine_dpkg_diag.log 2>&1; "
+         "echo \"===== $(date) =====\"; "
+         "echo '--- dpkg journal (updates/) ---'; ls -la '%@/Library/dpkg/updates/'; "
+         "echo '--- sileolists ---'; ls -ld '%@/var/lib/apt/sileolists' '%@/var/lib/apt/sileolists/operations'; "
+         "echo '--- apt lists ---'; ls -ld '%@/var/lib/apt/lists'; "
+         "echo '--- dpkg --audit ---'; '%@/usr/bin/dpkg' --audit; "
+         "echo '--- not-installed-ok pkgs ---'; '%@/usr/bin/dpkg' -l | grep -v '^ii' | head -40; "
+         "echo; ",
+        jbroot, jbroot, jbroot, jbroot, jbroot, jbroot];
+    exec_cmd_trusted(JBROOT_PATH("/bin/sh"), "-c", script.fileSystemRepresentation, NULL);
+    // 交给 mobile，AFC 才能正常读取
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "mobile:mobile", "/var/mobile/Media/dopamine_dpkg_diag.log", NULL);
 }
 
 - (NSError *)finalizeBootstrap
@@ -1029,6 +1120,13 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
             if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install basebin link: %d\n", r]}];
         }
     }
+
+    // ===== dpkg 一致性收尾 =====
+    // 必须放在所有 installPackage 之后：这里跑的 dpkg --configure -a 会 replay 并清空
+    // status journal，若后面还有 dpkg -i，又会留下新的 journal，Sileo 照样弹“dpkg 被中断”。
+    [[DOUIManager sharedInstance] sendLog:@"Reconciling dpkg database" debug:NO];
+    [self ensureDpkgConsistent];
+    [self writeDpkgDiagnostics];
 
     return nil;
 }
