@@ -56,7 +56,8 @@ int unsandbox(const char* dir, const char* file);
 int ensure_dyld_trustcache(const char* path);
 
 int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
-int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, void* cdhashOut);
+int ensure_randomized_cdhash_readonly(const char* inputPath, void* cdhashOut);
+int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, void* cdhashOut, int doWrite);
 
 char* generate_sandbox_extensions(audit_token_t *processToken, bool writable);
 

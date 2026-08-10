@@ -174,10 +174,14 @@ void roothide_launchd_postinit(bool firstLoad)
 
 	if(!firstLoad)
 	{
+		// build38.23: 用户空间重启后内核 trustcache（含 DYLD_TRUSTCACHE_UUID）
+		// 仍在内存中保留，dyld 已被初始越狱签名信任，无需重新信任；且此时 dyld
+		// 已被所有进程映射为共享 dyld，若再对文件做 O_RDWR 随机化会破坏已映射进程
+		// 镜像（kalloc.96 use-after-free / PAC data abort）。ensure_dyld_trustcache
+		// 内部已改为只读优先检查，失败也绝不 launchd_panic（initproc 崩溃=硬重启）。
 		int ret = ensure_dyld_trustcache(JBROOT_PATH("/basebin/.fakelib/dyld"));
 		if (ret != 0) {
-			launchd_panic("ensure dyld trustcache failed: %d", ret);
-			return;
+			JBLogError("ensure_dyld_trustcache returned %d on userspace reboot (trustcache already persists from initial jailbreak); continuing.", ret);
 		}
 	}
 

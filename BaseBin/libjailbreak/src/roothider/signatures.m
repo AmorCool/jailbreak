@@ -257,7 +257,7 @@ static void recurse_handler(NSString *loadPath, NSString *loaderPath, NSString *
 							// We do want to parse it's dependencies however, as one may have been updated since we added the binary to trustcache
 							// Potential optimization: If trustcached, save in some array so we don't recheck
 
-							int ret = ensure_randomized_cdhash_for_slice(realLoadPath.fileSystemRepresentation, macho->archDescriptor.offset, cdhash);
+							int ret = ensure_randomized_cdhash_for_slice(realLoadPath.fileSystemRepresentation, macho->archDescriptor.offset, cdhash, 1);
 							if(ret==0) {
 								cdhashesAdd(cdhash);
 							} else {

@@ -20,6 +20,22 @@ extern bool code_directory_calculate_page_hash(CS_CodeDirectory *codeDir, MachO 
 if here are any unclosed file descriptors before the Dopamine process ends, 
 	the "attempt to map verified executable page" panic may occur.
 */
+// build38.23: 只读打开，不要求 W_OK、不以 O_RDWR 打开，避免用户空间重启后
+// jbroot 尚未可写导致失败，也避免打开正在被所有进程映射的 dyld 引发 EBADMACHO/
+// 死锁。仅用于计算 cdhash（不写入文件）。
+Fat* fat_init_readonly(const char *filePath)
+{
+	if(access(filePath, R_OK) != 0) {
+		JBLogError("Error: file is not readable: %s\n", filePath);
+		return NULL;
+	}
+
+    MemoryStream *stream = file_stream_init_from_path(filePath, 0, FILE_STREAM_SIZE_AUTO, 0);
+    if(!stream) return NULL;
+
+	return fat_init_from_memory_stream(stream);
+}
+
 Fat* fat_init_for_writing(const char *filePath)
 {
 	//make sure the file already exists, otherwise choma will create a new file
@@ -80,7 +96,15 @@ MachO* fat_find_slice_by_offset(Fat* fat, uint64_t offset)
 
 int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut)
 {
-	return ensure_randomized_cdhash_for_slice(inputPath, -1, cdhashOut);
+	return ensure_randomized_cdhash_for_slice(inputPath, -1, cdhashOut, 1);
+}
+
+// build38.23: 只读变体，doWrite=0 时不改写文件（用户空间重启后 dyld 已被所有
+// 进程映射为共享 dyld，对其做 O_RDWR 随机化会破坏已映射进程镜像并可能引发内核
+// 崩溃；且 jbroot 此时可能尚未可写导致失败）。仅计算当前 cdhash 用于信任检查。
+int ensure_randomized_cdhash_readonly(const char* inputPath, void* cdhashOut)
+{
+	return ensure_randomized_cdhash_for_slice(inputPath, -1, cdhashOut, 0);
 }
 
 /* on ios16(+?)
@@ -91,11 +115,11 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut)
 3: `open(O_RDWR)` on certain binaries(e.g., WebContent) may cause deadlock (krwlock for writing)
 	while `read`/`posix_spawn` happen to be running on the binary.
 */
-int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, void* cdhashOut)
+int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, void* cdhashOut, int doWrite)
 {
 	JBLogDebug("ensure_randomized_cdhash_for_slice(slice=%llx): %s\n", offset, inputPath);
 
-    Fat* fat = fat_init_for_writing(inputPath);
+    Fat* fat = doWrite ? fat_init_for_writing(inputPath) : fat_init_readonly(inputPath);
     if (!fat) {
 		JBLogError("Error: failed to init fat: %s\n", inputPath);
 		return -1;
@@ -205,13 +229,16 @@ int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, v
 			}
 		}
 	
-	*rd2 = jbinfo(jbrand);
-
-	JBLogDebug("randomize cdhash with %016llX: %s\n", *rd2, inputPath);
-		
-		if(memory_stream_write(fat->stream, macho->archDescriptor.offset + firstsectoffset, sizeof(firstsection), &firstsection) != 0) {
-			JBLogError("Error: failed to write macho file: %s\n", inputPath);
-			break;
+		if(doWrite) {
+			*rd2 = jbinfo(jbrand);
+			JBLogDebug("randomize cdhash with %016llX: %s\n", *rd2, inputPath);
+			if(memory_stream_write(fat->stream, macho->archDescriptor.offset + firstsectoffset, sizeof(firstsection), &firstsection) != 0) {
+				JBLogError("Error: failed to write macho file: %s\n", inputPath);
+				break;
+			}
+		}
+		else {
+			JBLogDebug("read-only cdhash (skip randomize write): %s\n", inputPath);
 		}
 				
 		CS_CodeDirectory codeDir;
@@ -235,7 +262,7 @@ int ensure_randomized_cdhash_for_slice(const char* inputPath, uint64_t offset, v
 
 			if(curIndex.type == bestCDBlob->type)
 			{
-				if(0 != memory_stream_write(fat->stream, macho->archDescriptor.offset + linkedit.dataoff + curIndex.offset + codeDir.hashOffset, codeDir.hashSize, pageHash)) {
+				if(doWrite && 0 != memory_stream_write(fat->stream, macho->archDescriptor.offset + linkedit.dataoff + curIndex.offset + codeDir.hashOffset, codeDir.hashSize, pageHash)) {
 					JBLogError("Error: failed to write page hash: %s\n", inputPath);
 					break;
 				}

@@ -808,6 +808,18 @@ int ensure_dyld_trustcache(const char* path)
     JBLogDebug("trusting dyld file: %s", path);
 
     cdhash_t cdhash = {0};
+
+    // build38.23: 先以只读方式计算 cdhash 并检查是否已在内核 trustcache 中。
+    // 用户空间重启后 dyld 已被初始越狱签名信任，且内核 trustcache（含
+    // DYLD_TRUSTCACHE_UUID）仍在内存中保留，无需再对文件做 O_RDWR 随机化
+    // （否则会改写被所有进程映射的共享 dyld，破坏进程镜像并可能引发内核崩溃；
+    // 且此时 jbroot 可能尚未可写导致返回 -1）。只读检查即可，不做任何写入。
+    if (ensure_randomized_cdhash_readonly(path, cdhash) == 0 && is_cdhash_trustcached(cdhash)) {
+        JBLogDebug("dyld file already trusted (read-only check): %s", path);
+        return 0;
+    }
+
+    // 未信任或只读检查失败：走完整随机化+上传流程
     if(ensure_randomized_cdhash(path, cdhash) != 0) {
         JBLogError("Error: failed to ensure randomized cdhash: %s\n", path);
         return -1;
