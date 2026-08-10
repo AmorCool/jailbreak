@@ -290,12 +290,30 @@ int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *re
 
 	if (ret == 0 && pid > 0) {
 		if(should_suspend) {
-			if(jbdSpawnPatchChild(pid, should_resume) != 0) {
-				JBLogError("Failed to patch spawned process (%d) %s", pid, path);
-				//just kill it instead of letting it hang forever so that launchd can respawn it later
-				kill(pid, SIGQUIT); //core dump
-				kill(pid, SIGKILL);
-				ret = 202;
+			// build38.33: jbdSpawnPatchChild 是 iOS15 的 spinlock fix，内部是同步阻塞 XPC
+			// （jailbreakdXpcRequest→xpc_pipe_routine）。重启用户空间后（launchdhookFirstLoad==false）
+			// jailbreakd 尚未就绪，launchd 卡在 spawn hook 等其回包 → 死锁黑屏。
+			// 仅当确实需要 spinlock fix 时才调用（与上方 SPINLOCK_FIX_DISABLED 门控一致：
+			// iOS16+ / dyld_patch 已启用时不需要），避免无谓的阻塞 XPC。
+			// prehook（roothide 路径处理 / .jbroot 软链）与 DYLD_IN_CACHE=0（dyldhook vm_protect 修复）不受影响。
+			bool doSpinlockPatch = false;
+#ifdef __arm64e__
+			if(!__builtin_available(iOS 16.0, *)) {
+				doSpinlockPatch = (!dyld_patch_enabled() && process_force_dyld_patch(path, argv));
+			}
+			// iOS 16+ (arm64e)：跳过——spinlock fix 不需要，且重启后 jailbreakd 未就绪时
+			// jbdSpawnPatchChild 的同步 XPC 会死锁 launchd（build38.33 修复）
+#else
+			doSpinlockPatch = true;
+#endif
+			if(doSpinlockPatch) {
+				if(jbdSpawnPatchChild(pid, should_resume) != 0) {
+					JBLogError("Failed to patch spawned process (%d) %s", pid, path);
+					//just kill it instead of letting it hang forever so that launchd can respawn it later
+					kill(pid, SIGQUIT); //core dump
+					kill(pid, SIGKILL);
+					ret = 202;
+				}
 			}
 		}
 	} else {
