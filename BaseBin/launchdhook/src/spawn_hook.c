@@ -23,6 +23,7 @@ extern int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const c
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
 
 extern int systemwide_trust_file_by_path(const char *path);
+extern int roothide_launchd_trust_executable(const char *path);
 extern int platform_set_process_debugged(uint64_t pid, bool fullyDebugged);
 extern void systemwide_domain_set_enabled(bool enabled);
 
@@ -222,7 +223,15 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	// iOS18 上 posthook 的两项职责（spinlock fix / DYLD_IN_CACHE=0）均不需要，
 	// 3.x 的 __posix_spawn_hook 已自行完成 roothide 路径重映射与注入。
 	// 注意：上方第 98 行的 ensure_jbroot_symlink（build38.27 的 Sileo 修复）保留，不受影响。
-	return posix_spawn_hook_shared(pid, path, desc, argv, envp, __posix_spawn_orig_wrapper, systemwide_trust_file_by_path, platform_set_process_debugged, jbsetting(jetsamMultiplier));
+	// build38.37: trust 回调恢复 roothide 版本（与 rh2 一致）。
+	// 38.34 用 systemwide_trust_file_by_path：dyld_patch_enabled 默认 false 时，
+	// 它只信任单个二进制，不会递归信任 jbroot/basebin 及 @loader_path/.jbroot 依赖
+	// → systemhook.dylib 及其依赖不被信任 → dyld 拒绝加载 → 注入失败 →
+	// Sileo spawnAsRoot(persona 99) 提权失败 → sileolists 建不出("文件夹不存在")
+	// + 插件无效 + TSLite 报错。roothide_launchd_trust_executable 在 dyld_patch
+	// 关闭时走 roothide_trust_executable_recurse（递归信任 jbroot 内全部文件）。
+	// 仅改 trust 回调，不回退 posthook（DYLD_IN_CACHE=0 黑屏根因仍保持 38.34 的修复）。
+	return posix_spawn_hook_shared(pid, path, desc, argv, envp, __posix_spawn_orig_wrapper, roothide_launchd_trust_executable, platform_set_process_debugged, jbsetting(jetsamMultiplier));
 }
 
 void initSpawnHooks(void)

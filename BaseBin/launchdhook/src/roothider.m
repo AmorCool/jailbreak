@@ -148,10 +148,36 @@ void roothide_launchd_postinit(bool firstLoad)
 		// unsandbox2.m 是 iOS 16 (xnu-8796) 时代的内核 namecache vnode 操作，
 		// iOS 18 (xnu-11215) 上结构偏移不匹配极可能返回非 0——原 assert 直接
 		// 让 launchd abort → panic → 硬重启（用户现象：闪 Dopamine logo 后重启）。
-		// unsandbox 仅影响进程 sandbox 移除（注入辅助），失败不致命，记录后继续。
+		//
+		// build38.37 重要修正：unsandbox 失败是"致命"的，不能静默继续！
+		// HOOK_DYLIB_PATH 指向真实根 /usr/lib/systemhook-%016llX.dylib，而 systemhook
+		// 实际文件在 jbroot/basebin/。dyld 只有通过 /usr/lib 路径（fakelib 挂载 +
+		// namecache hack）才能解析它；unsandbox 失败 → spawn_hook 里
+		// access(HOOK_DYLIB_PATH, F_OK) != 0 → shouldInsertJBEnv=false → systemhook
+		// 不注入任何进程 → Sileo 的 spawnAsRoot（persona 99 提权）没有 systemhook
+		// 改写 → iOS 17.6+ persona 封禁下 posix_spawn 直接失败 → sileolists 目录
+		// 建不出来（Sileo 弹"文件夹不存在"）+ 插件全部无效 + TSLite 装应用报错。
+		// 兜底方案：fakelib 是 bindfs 挂载 /usr/lib → jbroot/basebin/.fakelib，
+		// 直接在挂载源目录里创建同名符号链接，dyld 即可解析
+		// /usr/lib/systemhook-%016llX.dylib → basebin/systemhook-%016llX.dylib，
+		// 完全绕开对内核 namecache hack 的依赖。
 		int unsandboxRet = unsandbox("/usr/lib", systemhookFilePath.fileSystemRepresentation);
 		if (unsandboxRet != 0) {
-			JBLogError("roothide: unsandbox failed (%d), continuing.", unsandboxRet);
+			JBLogError("roothide: unsandbox failed (%d), falling back to fakelib symlink.", unsandboxRet);
+		}
+
+		// build38.37: fakelib 兜底符号链接（随机名 + 固定名）。
+		// basebin_gen.m 只建了固定名 .fakelib/systemhook.dylib → basebin/systemhook.dylib，
+		// systemhook 被改名为随机名后固定名链接断链；这里两个名字都指向随机名真实文件。
+		NSString *fakelibRandomLink = [NSString stringWithFormat:@"%@/.fakelib/systemhook-%016llX.dylib", JBROOT_PATH(@"/basebin"), jbinfo(jbrand)];
+		[NSFileManager.defaultManager removeItemAtPath:fakelibRandomLink error:nil];
+		if (![NSFileManager.defaultManager createSymbolicLinkAtPath:fakelibRandomLink withDestinationPath:systemhookFilePath error:nil]) {
+			JBLogError("roothide: failed to create fakelib random systemhook symlink %@ -> %@", fakelibRandomLink, systemhookFilePath);
+		}
+		NSString *fakelibFixedLink = JBROOT_PATH(@"/basebin/.fakelib/systemhook.dylib");
+		[NSFileManager.defaultManager removeItemAtPath:fakelibFixedLink error:nil];
+		if (![NSFileManager.defaultManager createSymbolicLinkAtPath:fakelibFixedLink withDestinationPath:systemhookFilePath error:nil]) {
+			JBLogError("roothide: failed to create fakelib fixed systemhook symlink %@ -> %@", fakelibFixedLink, systemhookFilePath);
 		}
 
 		//new "real path"

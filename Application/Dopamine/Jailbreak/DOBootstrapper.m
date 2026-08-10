@@ -728,7 +728,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         // roothide specific: --force-depends 绕过依赖检查（如 sileo 依赖的 firmware 包
         // 不在 roothide bootstrap 里，dpkg 默认拒绝配置；firmware 只是固件版本标记包，
         // 运行时不需要，后续从源里更新时会自动补装）
-        return exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"), "--force-depends", "-i", packagePath.fileSystemRepresentation, NULL);
+        // build38.37: 带超时——installPackage 也被 launchctl/basebin-link 等分支共用，
+        // 无超时的 exec_cmd_trusted 同步 waitpid 卡住 → 看门狗杀 app（闪退）。
+        return [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", packagePath]];
     }
     else {
         // idk why but waitpid sometimes fails and this returns -1, so we just ignore the return value
@@ -758,7 +760,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     argv[allArgs.count] = NULL;
 
     pid_t pid = 0;
-    int spawnError = posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL);
+    // build38.37: envp 必须传 environ（与 exec_cmd 一致）。
+    // 38.36 传 NULL → 子进程环境为空 → dpkg 找不到 JBROOT/PATH/动态库 → 各种诡异失败。
+    extern char **environ;
+    int spawnError = posix_spawn(&pid, argv[0], NULL, NULL, argv, environ);
     for (NSUInteger i = 0; i < allArgs.count; i++) free(argv[i]);
     free(argv);
 
@@ -817,7 +822,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:packageManagerDict[@"Package"]];
         NSString *name = packageManagerDict[@"Display Name"];
         // build38.36: 带超时（sileo.deb ~4MB，给足 120s；超时杀进程不再阻塞 finalize）
-        int r = [self execTrustedWithTimeout:120.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        int r = [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
         if (r != 0 && r != 124) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install %@: %d\n", name, r]}];
         }
@@ -898,7 +903,8 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     if ([self firmwarePackageValid]) return;
 
     // 1) 尝试用 jbroot 路径运行 firmware 二进制（它会用 roothide 运行时把包写进 jbroot/Library/dpkg/status）
-    exec_cmd_trusted(JBROOT_PATH("/usr/libexec/firmware"), NULL);
+    // build38.37: 带超时——firmware 二进制若卡住，主线程阻塞超看门狗阈值同样闪退。
+    [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/libexec/firmware") arguments:@[]];
     if ([self firmwarePackageValid]) return;
 
     // 2) 兜底：把 firmware 段落删掉后重新写入一个格式正确的条目（版本取 iOS 营销版本）
@@ -929,7 +935,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Installing %@", deb] debug:YES];
-        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        int r = [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"%@ install result: %d", deb, r] debug:YES];
     }
 }
@@ -941,14 +947,14 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     NSString *roothideManager = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:roothideManager]) {
         // build38.36: 带超时
-        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", roothideManager]];
+        int r = [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", roothideManager]];
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"roothideapp.deb install result: %d", r] debug:YES];
     }
     // 刷新 RootHide Manager 图标（只刷单个 app，避免 3.x 里 uicache -a 被注释掉的全局刷新可能触发的问题）
     NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
     if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
         NSString *rootHideApp = JBROOT_PATH(@"/Applications/RootHide.app");
-        int r = [self execTrustedWithTimeout:60.0 binary:uicache arguments:@[@"-p", rootHideApp]];
+        int r = [self execTrustedWithTimeout:15.0 binary:uicache arguments:@[@"-p", rootHideApp]];
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"uicache(RootHide.app) result: %d", r] debug:YES];
     }
 }
@@ -967,20 +973,23 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     //      Depends com.roothide.patchloader>=0.0.4，用户设备导出版 2.0 = 官方最新）
     //   3. ellekit.deb（mobilesubstrate 替身：Provides mobilesubstrate(=99) + 提供
     //      libsubstrate/TweakInject 符号链，rootless 插件的依赖检查与链接需要。官方源 1.2。）
-    // build38.36: 全部改走带超时的 exec——dpkg 卡住（锁残留/半状态）时不再阻塞 finalize。
-    NSArray *extraDebs = @[@"appsync.deb", @"tslite.deb", @"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb"];
+    // build38.37: AppSync 必须在 ellekit 之后装——appsync 的 Depends 是
+    // mobilesubstrate (>= 0.9.5100)，而 ellekit 是 mobilesubstrate 的提供者。
+    // 38.35/38.36 把 appsync 排最前 → dpkg 强装后依赖仍不满足 → Sileo 数据库里
+    // AppSync 状态异常 → 弹 "needs to be reinstalled, but I can't find an archive for it"。
+    NSArray *extraDebs = @[@"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb", @"appsync.deb", @"tslite.deb"];
     for (NSString *deb in extraDebs) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Installing %@", deb] debug:YES];
-        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        int r = [self execTrustedWithTimeout:15.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"%@ install result: %d", deb, r] debug:YES];
     }
     // TSLite 是 /Applications 里的 app，装完刷新图标（同样带超时，uicache 在 3.x 偶发卡住）
     NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
     if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
         NSString *tsliteApp = JBROOT_PATH(@"/Applications/TrollStoreLite.app");
-        int r = [self execTrustedWithTimeout:60.0 binary:uicache arguments:@[@"-p", tsliteApp]];
+        int r = [self execTrustedWithTimeout:15.0 binary:uicache arguments:@[@"-p", tsliteApp]];
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"uicache result: %d", r] debug:YES];
     }
 }
@@ -1018,6 +1027,14 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     //      root:wheel 挡住 Sileo。故此处移除对它的处理。
 
     // 1) root 拥有的路径下、但需要 mobile 写入的目录 → 建完 chown mobile:mobile
+    // build38.37: /var/lib/apt 本身也必须 mobile 可写——Sileo init() 每次启动会
+    // rm -rf sileolists 再 mkdir -p 重建（spawnAsRoot）。若提权降级为 mobile，
+    // rm 能删掉 mobile 拥有的 sileolists（38.31 已 chown），但 mkdir 时父目录
+    // /var/lib/apt 若仍是 root:wheel 0755 → mobile 无权限建目录 → “文件夹不存在”
+    // 依旧。把 /var/lib/apt 及 sileolists 全部 chown mobile:mobile，两条路径都成立。
+    exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
     NSArray *mobileOwnedDirs = @[
         @"/var/lib/apt/sileolists",             // 图三报错的父目录
         @"/var/lib/apt/sileolists/operations",  // buildOperations() 用 try! 创建，父目录缺失会直接崩溃
@@ -1068,7 +1085,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 永久卡住（阻塞 finalize → 看门狗杀 app → “闪退”）。超时后杀子进程继续流程。
     NSString *dpkg = JBROOT_PATH(@"/usr/bin/dpkg");
     [[DOUIManager sharedInstance] sendLog:@"Running dpkg --configure -a" debug:YES];
-    int r = [self execTrustedWithTimeout:90.0 binary:dpkg arguments:@[@"--force-depends", @"--force-configure-any", @"--configure", @"-a"]];
+    int r = [self execTrustedWithTimeout:15.0 binary:dpkg arguments:@[@"--force-depends", @"--force-configure-any", @"--configure", @"-a"]];
     [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"dpkg --configure -a result: %d", r] debug:YES];
 }
 
