@@ -103,6 +103,7 @@ __attribute__((constructor)) static void initializer(void)
 {
 	crashreporter_start();
 
+	bootlog("================ NEW launchd boot (pid=%d) ================", getpid());
 	bootlog("INIT enter pid=%d DOPAMINE_INITIALIZED=%s DYLD_INSERT_LIBRARIES=%s LAUNCHD_UUID=%s",
 		getpid(),
 		getenv("DOPAMINE_INITIALIZED") ?: "NULL",
