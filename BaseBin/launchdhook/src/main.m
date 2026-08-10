@@ -107,11 +107,27 @@ __attribute__((constructor)) static void initializer(void)
 /********** roothide specfic ********/
 
 	// Retrieve jbroot path early based on our dylib path (<JBROOT>/basebin/launchd) so we can use JBROOT_PATH before boomerang_recoverPrimitives
+	// roothide merge (build38.16): 用 getenv("DYLD_INSERT_LIBRARIES") 代替 dladdr。
+	// 真机崩溃日志（多次 panic，iPhone XS iOS 18.0）显示 launchd 调用 dyld API
+	// （dladdr 等）时在 patched dyld 上崩溃 → initproc panic。getenv 是 libc 调用，
+	// 不经过 dyld，完全绕开崩溃路径。launchdhook 自身通过 DYLD_INSERT_LIBRARIES
+	// 注入，env 中值为 <jbroot>/basebin/launchdhook.dylib，解析即得 jbroot。
 	@autoreleasepool {
-		Dl_info selfInfo;
-		if (dladdr(&initializer, &selfInfo) != 0) {
-			NSString *selfPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
+		const char *dyld_insert = getenv("DYLD_INSERT_LIBRARIES");
+		if (dyld_insert) {
+			NSString *insertStr = [NSString stringWithUTF8String:dyld_insert];
+			// 可能包含多个路径用 : 分隔，取第一个（launchdhook 自身）
+			NSString *selfPath = [[insertStr componentsSeparatedByString:@":"] firstObject];
 			gSystemInfo.jailbreakInfo.rootPath = strdup(selfPath.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent.fileSystemRepresentation);
+		}
+		// fallback: DYLD_INSERT 不存在时继续用 dladdr（此次崩溃修复主要针对
+		// 多库注入场景 DYLD_INSERT 含多个路径，取第一个 launchdhook 所在）
+		if (!gSystemInfo.jailbreakInfo.rootPath) {
+			Dl_info selfInfo;
+			if (dladdr(&initializer, &selfInfo) != 0) {
+				NSString *selfPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
+				gSystemInfo.jailbreakInfo.rootPath = strdup(selfPath.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent.fileSystemRepresentation);
+			}
 		}
 	}
 
