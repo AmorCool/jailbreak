@@ -17,6 +17,8 @@
 #import <dlfcn.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/wait.h>
+#import <signal.h>
 #import "NSString+Version.h"
 
 #define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.3"
@@ -735,6 +737,54 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     }
 }
 
+// build38.36: 带超时的 trusted exec。
+// 背景：用户设备历史上 dpkg 中断过（updates/ journal 残留 → Sileo 弹“dpkg 被中断”），
+// 38.35 在 finalize 里新增 3 个 dpkg -i + --configure -a 后，若 dpkg 锁/半状态导致
+// 子进程卡住，exec_cmd 的同步 waitpid 会永久阻塞 → Dopamine app 无响应 →
+// iOS 看门狗杀 app → 表现为“Fixing roothide 流程闪退、重开显示已越狱”。
+// 这里给所有关键 dpkg 调用加超时：超时后 SIGKILL 子进程并返回 124（timeout 约定），
+// 调用方容忍处理，保证 finalize 永不永久阻塞。
+- (int)execTrustedWithTimeout:(double)timeoutSeconds binary:(NSString *)binary arguments:(NSArray<NSString *> *)arguments
+{
+    jbclient_trust_file_by_path(binary.fileSystemRepresentation);
+
+    NSMutableArray<NSString *> *allArgs = [NSMutableArray arrayWithObject:binary];
+    [allArgs addObjectsFromArray:arguments];
+
+    char **argv = calloc(allArgs.count + 1, sizeof(char *));
+    for (NSUInteger i = 0; i < allArgs.count; i++) {
+        argv[i] = strdup(allArgs[i].fileSystemRepresentation);
+    }
+    argv[allArgs.count] = NULL;
+
+    pid_t pid = 0;
+    int spawnError = posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL);
+    for (NSUInteger i = 0; i < allArgs.count; i++) free(argv[i]);
+    free(argv);
+
+    if (spawnError != 0 || pid <= 0) return spawnError;
+
+    double waited = 0.0;
+    int status = 0;
+    while (waited < timeoutSeconds) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) {
+            if (WIFEXITED(status)) return WEXITSTATUS(status);
+            if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+            return -1;
+        }
+        usleep(50000); // 50ms
+        waited += 0.05;
+    }
+
+    // 超时：杀掉子进程，避免 finalize 永久阻塞
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    NSLog(@"[Dopamine] exec timed out after %.0fs, killed pid %d: %@ %@", timeoutSeconds, pid, binary, arguments);
+    return 124;
+}
+
+
 - (int)uninstallPackageWithIdentifier:(NSString *)identifier
 {
     return exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"), "-r", identifier.UTF8String, NULL);
@@ -766,8 +816,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     for (NSDictionary *packageManagerDict in enabledPackageManagers) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:packageManagerDict[@"Package"]];
         NSString *name = packageManagerDict[@"Display Name"];
-        int r = [self installPackage:path];
-        if (r != 0) {
+        // build38.36: 带超时（sileo.deb ~4MB，给足 120s；超时杀进程不再阻塞 finalize）
+        int r = [self execTrustedWithTimeout:120.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        if (r != 0 && r != 124) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install %@: %d\n", name, r]}];
         }
     }
@@ -872,12 +923,14 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // bootstrap 不含 file/gawk/libxar1/plutil 等基础工具链（RootHide Patcher 依赖它们），
     // 这些包在 roothide procursus 源里，但越狱时未必刷新过源/有网络。
     // 直接把对应 deb 打包进 App，用 --force-depends 幂等安装（installPackage 已带该参数）。
+    // build38.36: 改走带超时 exec，避免任一 dpkg 卡住阻塞 finalize。
     NSArray *toolchain = @[@"file.deb", @"gawk.deb", @"libxar1.deb", @"plutil.deb", @"libmagic1.deb", @"libmpfr6.deb"];
     for (NSString *deb in toolchain) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            [self installPackage:path];
-        }
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Installing %@", deb] debug:YES];
+        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"%@ install result: %d", deb, r] debug:YES];
     }
 }
 
@@ -887,13 +940,16 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 每次越狱都跑：既修复首次没装上的情况，也保证图标被 uicache 注册。
     NSString *roothideManager = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:roothideManager]) {
-        [self installPackage:roothideManager];
+        // build38.36: 带超时
+        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", roothideManager]];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"roothideapp.deb install result: %d", r] debug:YES];
     }
     // 刷新 RootHide Manager 图标（只刷单个 app，避免 3.x 里 uicache -a 被注释掉的全局刷新可能触发的问题）
     NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
     if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
         NSString *rootHideApp = JBROOT_PATH(@"/Applications/RootHide.app");
-        exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", rootHideApp.fileSystemRepresentation, NULL);
+        int r = [self execTrustedWithTimeout:60.0 binary:uicache arguments:@[@"-p", rootHideApp]];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"uicache(RootHide.app) result: %d", r] debug:YES];
     }
 }
 
@@ -911,20 +967,24 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     //      Depends com.roothide.patchloader>=0.0.4，用户设备导出版 2.0 = 官方最新）
     //   3. ellekit.deb（mobilesubstrate 替身：Provides mobilesubstrate(=99) + 提供
     //      libsubstrate/TweakInject 符号链，rootless 插件的依赖检查与链接需要。官方源 1.2。）
+    // build38.36: 全部改走带超时的 exec——dpkg 卡住（锁残留/半状态）时不再阻塞 finalize。
     NSArray *extraDebs = @[@"appsync.deb", @"tslite.deb", @"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb"];
     for (NSString *deb in extraDebs) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            [self installPackage:path];
-        }
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Installing %@", deb] debug:YES];
+        int r = [self execTrustedWithTimeout:60.0 binary:JBROOT_PATH(@"/usr/bin/dpkg") arguments:@[@"--force-depends", @"-i", path]];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"%@ install result: %d", deb, r] debug:YES];
     }
-    // TSLite 是 /Applications 里的 app，装完刷新图标
+    // TSLite 是 /Applications 里的 app，装完刷新图标（同样带超时，uicache 在 3.x 偶发卡住）
     NSString *uicache = JBROOT_PATH(@"/usr/bin/uicache");
     if ([[NSFileManager defaultManager] fileExistsAtPath:uicache]) {
         NSString *tsliteApp = JBROOT_PATH(@"/Applications/TrollStoreLite.app");
-        exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", tsliteApp.fileSystemRepresentation, NULL);
+        int r = [self execTrustedWithTimeout:60.0 binary:uicache arguments:@[@"-p", tsliteApp]];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"uicache result: %d", r] debug:YES];
     }
 }
+
 
 - (void)ensureSileoAndAptDirectories
 {
@@ -1004,9 +1064,12 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 78 个包中两者皆无），而 appsync 的 Depends 写着 mobilesubstrate (>= 0.9.5100)。
     // 不加 force，dpkg 会拒绝配置这类包，反而把 broken 状态留在数据库里。
     //
-    // 返回值忽略：个别包 postinst 失败不应中断整个越狱流程。
-    exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"),
-                     "--force-depends", "--force-configure-any", "--configure", "-a", NULL);
+    // build38.36: 改走带超时 exec——历史中断留下的 dpkg 锁/半状态可能让 --configure -a
+    // 永久卡住（阻塞 finalize → 看门狗杀 app → “闪退”）。超时后杀子进程继续流程。
+    NSString *dpkg = JBROOT_PATH(@"/usr/bin/dpkg");
+    [[DOUIManager sharedInstance] sendLog:@"Running dpkg --configure -a" debug:YES];
+    int r = [self execTrustedWithTimeout:90.0 binary:dpkg arguments:@[@"--force-depends", @"--force-configure-any", @"--configure", @"-a"]];
+    [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"dpkg --configure -a result: %d", r] debug:YES];
 }
 
 - (void)writeDpkgDiagnostics
@@ -1019,12 +1082,15 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         @"exec >> /var/mobile/Media/dopamine_dpkg_diag.log 2>&1; "
          "echo \"===== $(date) =====\"; "
          "echo '--- dpkg journal (updates/) ---'; ls -la '%@/Library/dpkg/updates/'; "
+         "echo '--- dpkg locks ---'; ls -la '%@/Library/dpkg/lock' '%@/Library/dpkg/lock-frontend' 2>&1; "
+         "echo '--- dpkg processes ---'; ps -A | grep -i dpkg | grep -v grep; "
          "echo '--- sileolists ---'; ls -ld '%@/var/lib/apt/sileolists' '%@/var/lib/apt/sileolists/operations'; "
          "echo '--- apt lists ---'; ls -ld '%@/var/lib/apt/lists'; "
+         "echo '--- roothidepatch / DynamicPatches ---'; ls -la '%@/usr/lib/roothidepatch.dylib' '%@/usr/lib/DynamicPatches/' 2>&1; "
          "echo '--- dpkg --audit ---'; '%@/usr/bin/dpkg' --audit; "
          "echo '--- not-installed-ok pkgs ---'; '%@/usr/bin/dpkg' -l | grep -v '^ii' | head -40; "
          "echo; ",
-        jbroot, jbroot, jbroot, jbroot, jbroot, jbroot];
+        jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot];
     exec_cmd_trusted(JBROOT_PATH("/bin/sh"), "-c", script.fileSystemRepresentation, NULL);
     // 交给 mobile，AFC 才能正常读取
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "mobile:mobile", "/var/mobile/Media/dopamine_dpkg_diag.log", NULL);
@@ -1062,6 +1128,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
+    // build38.36: 装新包前先清历史 dpkg journal/半状态——用户设备历史上 dpkg 中断过，
+    // 若 updates/ 残留 journal，后续 dpkg -i 会先 replay 旧事务（可能卡住/报错）。
+    // 先 --configure -a 清干净，再装三件套，最后收尾再清一次。
+    [self ensureDpkgConsistent];
     [self ensureExtraPackagesInstalled];
     [self ensureSileoAndAptDirectories];
     [self ensureJbrootSelfLink];
