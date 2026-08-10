@@ -109,8 +109,12 @@ void dyldhook_init(uintptr_t kernelParams)
 	mach_init_4real();
 
 	// roothide specific: init dyldhook roothide support (spinlock fix env, @loader_path/.jbroot)
+	// build38.15: iOS18+ merge 已排除 roothider.c/S（iOS 18 dyld 上 expandAtLoaderPath
+	// hook 不兼容，真机崩溃），故 IOS==18 时无此符号，不调用。
+#if IOS != 18
 	extern void dyldhook_init_roothide(uintptr_t);
 	dyldhook_init_roothide(kernelParams);
+#endif
 
 	// If we are in launchd, bail out
 	if (getpid() == 1) {

@@ -148,23 +148,17 @@ int basebin_generate_internal(NSString *originUsrLibPath, NSString *basebinPath,
 
 	carbonCopy(dyldOrigPath, dyldInflightPath);
 
-	// roothide merge (build38.14): iOS 17+ 不再生成 patched dyld。
-	// 真机崩溃证据（iPhone XS / iOS 18.0，panic 100543 等多次）：userspace
-	// reboot 后 launchd 重启早期崩溃，崩溃栈显示加载的 dyld 为 patched
-	// （LC_UUID = "DOPA-3.0.4"）。patched dyld（getAMFI patch + dyldhook
-	// merge）是 iOS 15-16 的 dyld_patch 机制；iOS 17+ 走 trustcache 模式，
-	// 原版 dyld 即可（launchdhook 注入依赖 DYLD_INSERT_LIBRARIES 已工作）。
-	// 跳过 patch 后 gen/dyld 为原版 dyld 副本，fakelib 挂载不影响 dyld。
-	BOOL shouldPatchDyld = YES;
-	if (@available(iOS 17.0, *)) {
-		shouldPatchDyld = NO;
-	}
-	if (shouldPatchDyld) {
-		NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
-		if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
-		if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
-		if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
-	}
+	// roothide merge (build38.15): 恢复 dyld patch（iOS 17+ 也需要）。
+	// build38.14 曾跳过 patch（iOS 17+ 用原版 dyld），但真机测试发现：
+	// 原版 dyld 的 getAMFI 返回真实值 → DYLD_INSERT_LIBRARIES（launchdhook）
+	// 被 dyld 拒绝 → dyld abort → launchd 崩 → panic（新崩溃点，panic 103734）。
+	// patched dyld（getAMFI→0xff 允许 DYLD_* 变量）是 3.x 官方机制，必需。
+	// iOS18+ merge 的 dyldhook 兼容性问题由 dyldhook Makefile 处理（排除
+	// roothider.c/S，见 build38.15 dyldhook 修改）。
+	NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
+	if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
+	if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
+	if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
 
 	if (comingFromJBUpdate) {
 		// We cannot delete dyld as this point because it's still in use
