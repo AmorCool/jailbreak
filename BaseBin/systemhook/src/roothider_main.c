@@ -476,7 +476,16 @@ void roothide_init()
 		}
 	}
 
-	HOOK_DYLIB_PATH = strdup(dyld_image_path_containing_address(&__dso_handle));
+	// roothide merge (build38.19): 替换 dyld_image_path_containing_address。
+	// 原调用在 iOS 18.0 patched dyld 上下文中崩溃（dyld API 在 patched dyld
+	// 初始化早期崩）。systemhook 路径可从 DYLD_INSERT_LIBRARIES 环境变量获取，
+	// 用法与 launchdhook main.m build38.16 一致。若 env 不可用则 fallback 原调用。
+	const char *dyld_insert = getenv("DYLD_INSERT_LIBRARIES");
+	if (dyld_insert) {
+		HOOK_DYLIB_PATH = strdup(dyld_insert);
+	} else {
+		HOOK_DYLIB_PATH = strdup(dyld_image_path_containing_address(&__dso_handle));
+	}
 
 	if(parse_dyldhook_jbinfo(NULL, NULL, NULL, NULL) != 0)
 	{
