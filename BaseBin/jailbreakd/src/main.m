@@ -38,58 +38,6 @@ int main(int argc, char* argv[])
 	enableJBDLog(JBLogDebugFunction, JBLogErrorFunction);
 #endif
 
-	// roothide merge (build38.17): 在 jailbreakd 启动早期检测并注入 launchdhook。
-	// 原因：iOS 17+ dyld patch 已跳过（原版 dyld），DYLD_INSERT_LIBRARIES 不再生效，
-	// launchdhook 必须在 userspace reboot 后由 jailbreakd 线程注入到 launchd（pid 1）。
-	// jailbreakd 有 task_for_pid-allow + thread-set-state entitlements。
-	{
-		char selfPathC[PATH_MAX];
-		uint32_t selfPathSize = sizeof(selfPathC);
-		if (_NSGetExecutablePath(selfPathC, &selfPathSize) == 0) {
-			NSString *selfPath = [NSString stringWithUTF8String:selfPathC];
-			NSString *jbroot = selfPath.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent;
-			NSString *launchdhookPath = [jbroot stringByAppendingPathComponent:@"basebin/launchdhook.dylib"];
-
-			// 检查 launchdhook 是否已在 launchd 中加载（简单检查：DYLD_INSERT 是否还在 env，
-			// 或者直接检查文件是否被 open——都不靠谱。直接注入，幂等无害。）
-			task_t launchdTask = MACH_PORT_NULL;
-			if (task_for_pid(mach_task_self(), 1, &launchdTask) == KERN_SUCCESS) {
-				// dlopen 在 Shared Cache 中，跨进程地址相同
-				void *dlopenPtr = dlsym(RTLD_DEFAULT, "dlopen");
-				if (dlopenPtr) {
-					const char *pathStr = launchdhookPath.fileSystemRepresentation;
-					size_t pathLen = strlen(pathStr) + 1;
-
-					mach_vm_address_t remoteStack = 0;
-					mach_vm_address_t remotePath = 0;
-					if (mach_vm_allocate(launchdTask, &remoteStack, 0x4000, VM_FLAGS_ANYWHERE) == KERN_SUCCESS &&
-						mach_vm_allocate(launchdTask, &remotePath, PATH_MAX, VM_FLAGS_ANYWHERE) == KERN_SUCCESS &&
-						mach_vm_write(launchdTask, remotePath, (vm_offset_t)pathStr, (mach_msg_type_number_t)pathLen) == KERN_SUCCESS) {
-
-						arm_thread_state64_t state = {};
-						state.__x[0] = (uint64_t)remotePath;
-						state.__x[1] = (uint64_t)RTLD_NOW;
-						state.__pc = (uint64_t)dlopenPtr;
-						state.__sp = (uint64_t)(remoteStack + 0x3f00);
-
-						thread_act_t thread = MACH_PORT_NULL;
-						if (thread_create_running(launchdTask, ARM_THREAD_STATE64, (thread_state_t)&state, ARM_THREAD_STATE64_COUNT, &thread) == KERN_SUCCESS) {
-							mach_port_deallocate(mach_task_self(), thread);
-						} else {
-							// thread_create_running not available, try thread_create + resume
-							if (thread_create(launchdTask, &thread) == KERN_SUCCESS) {
-								thread_set_state(thread, ARM_THREAD_STATE64, (thread_state_t)&state, ARM_THREAD_STATE64_COUNT);
-								thread_resume(thread);
-								mach_port_deallocate(mach_task_self(), thread);
-							}
-						}
-					}
-					mach_port_deallocate(mach_task_self(), launchdTask);
-				}
-			}
-		}
-	}
-
 	JBLogDebug("Hello from jailbrakd! uid=%d pid=%d ppid=%d", getuid(), getpid(), getppid());
 
 	@autoreleasepool {

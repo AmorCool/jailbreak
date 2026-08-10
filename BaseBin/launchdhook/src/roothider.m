@@ -134,10 +134,23 @@ void roothide_launchd_postinit(bool firstLoad)
 		if([NSFileManager.defaultManager fileExistsAtPath:JBROOT_PATH(@"/basebin/systemhook.dylib")])
 		{
 			[NSFileManager.defaultManager removeItemAtPath:systemhookFilePath error:nil];
-			assert([NSFileManager.defaultManager moveItemAtPath:JBROOT_PATH(@"/basebin/systemhook.dylib") toPath:systemhookFilePath error:nil]);
+			// roothide merge (build38.13): systemhook 改名失败不再 assert——
+			// assert 会让 launchd(initproc) abort → 内核 panic → 硬重启。
+			// 改名失败仅影响 systemhook 随机名机制，不致命。
+			if (![NSFileManager.defaultManager moveItemAtPath:JBROOT_PATH(@"/basebin/systemhook.dylib") toPath:systemhookFilePath error:nil]) {
+				JBLogError("roothide: failed to rename systemhook.dylib to %@, continuing.", systemhookFilePath);
+			}
 		}
 		
-		assert(unsandbox("/usr/lib", systemhookFilePath.fileSystemRepresentation) == 0);
+		// roothide merge (build38.13): unsandbox 失败不再 assert。
+		// unsandbox2.m 是 iOS 16 (xnu-8796) 时代的内核 namecache vnode 操作，
+		// iOS 18 (xnu-11215) 上结构偏移不匹配极可能返回非 0——原 assert 直接
+		// 让 launchd abort → panic → 硬重启（用户现象：闪 Dopamine logo 后重启）。
+		// unsandbox 仅影响进程 sandbox 移除（注入辅助），失败不致命，记录后继续。
+		int unsandboxRet = unsandbox("/usr/lib", systemhookFilePath.fileSystemRepresentation);
+		if (unsandboxRet != 0) {
+			JBLogError("roothide: unsandbox failed (%d), continuing.", unsandboxRet);
+		}
 
 		//new "real path"
 		asprintf(&HOOK_DYLIB_PATH, "/usr/lib/systemhook-%016llX.dylib", jbinfo(jbrand));
