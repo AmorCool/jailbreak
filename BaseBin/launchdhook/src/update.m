@@ -88,6 +88,18 @@ int jbupdate_basebin(const char *basebinTarPath)
 void jbupdate_update_system_info(void)
 {
 	@autoreleasepool {
+		// roothide merge (build38.12): 跳过 launchd 内的 XPF 偏移重建。
+		// 真机崩溃日志（panic-full-084910，iPhone XS / iOS 18.0）：
+		//   launchdhook initializer → jbupdate_finalize_stage2 → 本函数
+		//   → dlopen libxpf → xpf_start_with_kernel_path → XPF 分析 kernelcache
+		//   （xpf_common_init → _xpf_find_libsptm_init → _xpf_find_task_itk_space 等）
+		//   → 崩溃 → abort_with_reason → launchd(initproc) abort → 内核 panic → 硬重启。
+		//   崩溃时机 = userspace reboot 后 launchd 重启早期，与用户现象完全吻合。
+		// roothide 模式的偏移由 App 越狱时（gatherSystemInformation）计算并写入 jbinfo，
+		// launchd 无需重建；跳过本函数不影响正常越狱（仅影响"环境更新"时偏移刷新，
+		// 该场景在 roothide 下由重新越狱覆盖）。App 进程内 XPF 正常（文本日志验证）。
+		return;
+
 		// Load XPF
 		void *xpfHandle = dlopen("@loader_path/libxpf.dylib", RTLD_NOW);
 		if (!xpfHandle) {

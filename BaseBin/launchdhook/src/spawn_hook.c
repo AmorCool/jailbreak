@@ -103,12 +103,14 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 			// If there is a pending jailbreak update, apply it now
 			const char *stagedJailbreakUpdate = getenv("STAGED_JAILBREAK_UPDATE");
 			if (stagedJailbreakUpdate) {
+				// roothide merge (build38.12): jbupdate 失败不再 abort。
+				// 真机证据：STAGED 可能来自历史残留（来源未明），launchd 里
+				// jbupdate_basebin 任一环节失败（解压/trustcache 上传缺 primitives 等）
+				// 原代码 abort_with_reason → launchd(initproc) abort → 内核 panic → 硬重启。
+				// launchd 绝不因 basebin 更新失败而崩溃：失败仅忽略，继续 reboot 流程。
+				// （launchdhook 内无 JBLogError 宏，spawn_hook.c 为纯 C，静默跳过）
 				int r = jbupdate_basebin(stagedJailbreakUpdate);
-				if (r != 0) {
-					char msg[1000];
-					snprintf(msg, 1000, "Failed updating basebin (error %d).", r);
-					abort_with_reason(7, 1, msg, 0);
-				}
+				(void)r;
 				unsetenv("STAGED_JAILBREAK_UPDATE");
 			}
 
