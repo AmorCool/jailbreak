@@ -148,10 +148,23 @@ int basebin_generate_internal(NSString *originUsrLibPath, NSString *basebinPath,
 
 	carbonCopy(dyldOrigPath, dyldInflightPath);
 
-	NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
-	if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
-	if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
-	if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
+	// roothide merge (build38.14): iOS 17+ 不再生成 patched dyld。
+	// 真机崩溃证据（iPhone XS / iOS 18.0，panic 100543 等多次）：userspace
+	// reboot 后 launchd 重启早期崩溃，崩溃栈显示加载的 dyld 为 patched
+	// （LC_UUID = "DOPA-3.0.4"）。patched dyld（getAMFI patch + dyldhook
+	// merge）是 iOS 15-16 的 dyld_patch 机制；iOS 17+ 走 trustcache 模式，
+	// 原版 dyld 即可（launchdhook 注入依赖 DYLD_INSERT_LIBRARIES 已工作）。
+	// 跳过 patch 后 gen/dyld 为原版 dyld 副本，fakelib 挂载不影响 dyld。
+	BOOL shouldPatchDyld = YES;
+	if (@available(iOS 17.0, *)) {
+		shouldPatchDyld = NO;
+	}
+	if (shouldPatchDyld) {
+		NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
+		if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
+		if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
+		if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
+	}
 
 	if (comingFromJBUpdate) {
 		// We cannot delete dyld as this point because it's still in use
