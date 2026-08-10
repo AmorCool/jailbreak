@@ -917,6 +917,28 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     }
 }
 
+- (void)ensureSileoAndAptDirectories
+{
+    // roothide 下 Sileo/apt 的缓存与列表目录必须存在于 jbroot 内，否则 Sileo 刷新源时
+    // 创建源缓存目录失败，报“文件夹 'xxx-_Packages' 不存在”（用户实测 roothide.github.io-_Packages）。
+    // 根因：rh2 同版 Sileo（org.coolstar.sileo 2.5.1-12）在 rh2 下正常，因为 rh2 的 Dopamine App
+    // 以 jbroot 为根，整套环境会自动准备好这些目录；我们的 3.x App 以真实根运行，jbroot 内这些
+    // 目录可能从未被创建（prep_bootstrap.sh 不负责建，Sileo 自己在某些路径下也不会建中间目录）。
+    // 这里每次越狱幂等 mkdir -p 补齐。目录路径按 roothider 的 JBROOT_PATH(/var/mobile) 机制落在 jbroot 内。
+    NSArray *dirs = @[
+        @"/var/mobile/Library/Caches/Sileo/Sources",  // Sileo 源缓存目录（报错指向的就是它）
+        @"/var/mobile/Library/Caches/Sileo",
+        @"/var/cache/apt/archives/partial",           // apt 下载缓存
+        @"/var/cache/apt/lists/partial",              // apt 源列表缓存
+        @"/var/lib/apt/lists/partial",
+        @"/var/log/apt",
+    ];
+    for (NSString *d in dirs) {
+        NSString *p = JBROOT_PATH(d);
+        exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", p.fileSystemRepresentation, NULL);
+    }
+}
+
 - (NSError *)finalizeBootstrap
 {
     // Initial setup on first jailbreak
@@ -950,6 +972,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
     [self ensureExtraPackagesInstalled];
+    [self ensureSileoAndAptDirectories];
     [self ensureJbrootSelfLink];
     
     // roothide specific: libroot-dopamine / libkrw0-dopamine 由 roothide bootstrap 自带

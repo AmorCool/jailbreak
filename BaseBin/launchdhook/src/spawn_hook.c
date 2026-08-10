@@ -78,6 +78,16 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		// 真正被 initSpawnHooks 注册的入口是 __posix_spawn_hook，在此补上建链调用。
 		// ensure_jbroot_symlink 对非 jbroot 路径无副作用（直接 return），幂等可重复调用。
 		bootlog("SPAWN path=%s", path);
+		// build38.31 诊断：若 Sileo 刷新源仍报“文件夹不存在”，这里记录 Sileo 进程的 HOME，
+		// 以判断其缓存目录到底是落在 jbroot 内还是真实根（据此决定是否需改 ensureSileoAndAptDirectories 的路径）。
+		if (strstr(path, "Sileo") != NULL && envp) {
+			for (char *const *e = envp; *e; e++) {
+				if (strncmp(*e, "HOME=", 5) == 0) {
+					bootlog("SPAWN Sileo HOME=%s", (*e) + 5);
+					break;
+				}
+			}
+		}
 		extern void ensure_jbroot_symlink(const char* filepath);
 		ensure_jbroot_symlink(path);
 
