@@ -166,9 +166,6 @@ int basebin_generate_internal(NSString *originUsrLibPath, NSString *basebinPath,
 		if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
 		if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
 	}
-	if (apply_dyld_patch(dyldInflightPath, dyldUUIDPrefix.UTF8String) != 0) return 2;
-	if (merge_dyldhook(dyldInflightPath, dyldhookMergeDylibPath, dyldInflightPath) != 0) return 3;
-	if (resign_file(dyldInflightPath, @"com.apple.dyld", YES) != 0) return 4;
 
 	if (comingFromJBUpdate) {
 		// We cannot delete dyld as this point because it's still in use
