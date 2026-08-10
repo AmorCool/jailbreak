@@ -214,23 +214,25 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		}
 	}
 
-	// build38.29: 把 orig 参数从 __posix_spawn_orig_wrapper 改为 roothide posthook。
-	// posthook 内部会调用 __posix_spawn_orig_wrapper，并执行 spinlock patch、DYLD_IN_CACHE=0 等
-	// roothide 特有的 spawn 后处理（这些在 3.x merge 后全部丢失）。
-	return posix_spawn_hook_shared(pid, path, desc, argv, envp, roothide_launchd___posix_spawn_posthook, systemwide_trust_file_by_path, platform_set_process_debugged, jbsetting(jetsamMultiplier));
+	// build38.34: 回退 build38.29 的 posthook 接线。
+	// 证据：38.26~38.28 用 __posix_spawn_orig_wrapper 作为 orig（无 roothide posthook）时
+	// 用户空间重启正常；38.29+ 引入 posthook 后（其内部 DYLD_IN_CACHE=0）重启即黑屏卡死。
+	// 38.33 仅禁了 jbdSpawnPatchChild 仍黑屏，证明元凶是 posthook 的 DYLD_IN_CACHE=0
+	//（iOS18 下对继承 DYLD_INSERT_LIBRARIES 的系统守护进程强制不走共享缓存 → 启动卡死）。
+	// iOS18 上 posthook 的两项职责（spinlock fix / DYLD_IN_CACHE=0）均不需要，
+	// 3.x 的 __posix_spawn_hook 已自行完成 roothide 路径重映射与注入。
+	// 注意：上方第 98 行的 ensure_jbroot_symlink（build38.27 的 Sileo 修复）保留，不受影响。
+	return posix_spawn_hook_shared(pid, path, desc, argv, envp, __posix_spawn_orig_wrapper, systemwide_trust_file_by_path, platform_set_process_debugged, jbsetting(jetsamMultiplier));
 }
 
 void initSpawnHooks(void)
 {
-	// build38.29: 恢复 roothide 2.x 的 prehook/posthook 链路。
-	// 3.x merge 时 initSpawnHooks 被上游覆盖为直接 hook 到 __posix_spawn_hook，
-	// 导致 roothide_launchd___posix_spawn_prehook/posthook 成为死代码：
-	// - ensure_jbroot_symlink 本应覆盖所有 spawn 路径（build38.22 的修复曾加在 prehook 里，
-	//   但 prehook 从未被调用，所以 38.22 实际未生效，直到 build38.27 把 ensure_jbroot_symlink
-	//   内联到 __posix_spawn_hook 才修好 Sileo 闪退）。
-	// - posthook 里的 jbdSpawnPatchChild(spinlock fix)、DYLD_IN_CACHE=0 等逻辑完全丢失。
-	// rh2 原链路：__posix_spawn -> prehook -> __posix_spawn_hook -> posix_spawn_hook_shared -> posthook(as orig) -> __posix_spawn_orig_wrapper。
-	// 这里把入口改回 prehook，并把 __posix_spawn_hook 里的 orig 参数改为 posthook，
-	// 从而复活整条链路，同时保留 3.x 自己的 userspace reboot / boot logo / persona fix 逻辑。
-	litehook_hook_function(__posix_spawn, roothide_launchd___posix_spawn_prehook);
+	// build38.34: 回退 build38.29 的 prehook 接线。
+	// 38.29 把入口从 __posix_spawn_hook 改为 roothide prehook，连同 posthook 一起复活了
+	// RH2 整条 spawn 链。但实测（38.29~38.33）该链路在 iOS18 用户空间重启后黑屏卡死，
+	// 根因是 posthook 的 DYLD_IN_CACHE=0（见上文 build38.34 注释）。
+	// 38.26~38.28 仅 hook 到 __posix_spawn_hook（prehook 为死代码）时重启正常，
+	// 且 3.x 的 __posix_spawn_hook 已自带 roothide 路径重映射 + ensure_jbroot_symlink（build38.27）。
+	// 故恢复为 3.x 原生接线；prehook/posthook 退回死代码状态（无害）。
+	litehook_hook_function(__posix_spawn, __posix_spawn_hook);
 }
