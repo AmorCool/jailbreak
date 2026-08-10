@@ -119,7 +119,14 @@ __attribute__((constructor)) static void initializer(void)
 	// In that case, we want to run finalizers
 	const char *jbupdatePrevVersion = getenv("JBUPDATE_PREV_VERSION");
 	const char *jbupdateNewVersion = getenv("JBUPDATE_NEW_VERSION");
-	if (jbupdatePrevVersion && jbupdateNewVersion) {
+	// roothide merge (build38.13): 彻底禁用 launchd 内的 jbupdate finalizer。
+	// build38.12 已跳过 jbupdate_update_system_info（XPF），但真机（38.12 或
+	// 更早包）崩溃栈仍显示 launchd → XPF 路径，说明 JBUPDATE_* env 残留会
+	// 把 launchd 拖入 basebin 更新流程。roothide 的偏移/环境由 App 越狱时
+	// 建立并持久化，launchd 无需任何 jbupdate 收尾——直接跳过 stage1/stage2
+	// （stage2 内含 XPF 重建、basebin_generate、dyld trustcache 等高风险操作，
+	// 任一失败原代码都会 abort_with_reason → launchd panic → 硬重启）。
+	if (0 && jbupdatePrevVersion && jbupdateNewVersion) {
 		jbupdate_finalize_stage1(jbupdatePrevVersion, jbupdateNewVersion);
 	}
 
@@ -157,7 +164,7 @@ __attribute__((constructor)) static void initializer(void)
 		return;
 	}
 
-	if (jbupdatePrevVersion && jbupdateNewVersion) {
+	if (0 && jbupdatePrevVersion && jbupdateNewVersion) {
 		jbupdate_finalize_stage2(jbupdatePrevVersion, jbupdateNewVersion);
 		unsetenv("JBUPDATE_PREV_VERSION");
 		unsetenv("JBUPDATE_NEW_VERSION");
