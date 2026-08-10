@@ -14,6 +14,12 @@
 #include "bootlog.h"
 extern char **environ;
 
+// build38.32: 这两个 roothide spawn hook 在 roothider.m 中定义，需在文件顶部声明，
+// 因为 __posix_spawn_hook（上方）与 initSpawnHooks（下方）都会用到；
+// 原先声明放在文件末尾导致 __posix_spawn_hook 使用时未声明 → 编译失败。
+extern int roothide_launchd___posix_spawn_prehook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
+extern int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
+
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
 
 extern int systemwide_trust_file_by_path(const char *path);
@@ -213,9 +219,6 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	// roothide 特有的 spawn 后处理（这些在 3.x merge 后全部丢失）。
 	return posix_spawn_hook_shared(pid, path, desc, argv, envp, roothide_launchd___posix_spawn_posthook, systemwide_trust_file_by_path, platform_set_process_debugged, jbsetting(jetsamMultiplier));
 }
-
-extern int roothide_launchd___posix_spawn_prehook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
-extern int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
 
 void initSpawnHooks(void)
 {
