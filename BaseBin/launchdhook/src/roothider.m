@@ -346,6 +346,11 @@ int roothide_launchd___posix_spawn_prehook(pid_t *restrict pidp, const char *res
 		return __posix_spawn_hook(pidp, path, desc, argv, envp);
 	}
 
+	// build38.22: 确保被 spawn 的 jbroot 可执行文件所在目录有 .jbroot 软链，
+	// 使 @loader_path/.jbroot 在 dyld 加载时能在文件系统层解析（覆盖越狱后新装的 app）。
+	extern void ensure_jbroot_symlink(const char* filepath);
+	ensure_jbroot_symlink(path);
+
 	if(isRemovableBundlePath(path)) {
 		static dispatch_once_t onceToken = {0};
 		dispatch_once(&onceToken, ^{

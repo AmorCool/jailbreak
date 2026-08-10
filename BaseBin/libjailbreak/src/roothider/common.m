@@ -13,6 +13,7 @@
 #include <mach-o/dyld.h>
 #include <sys/proc_info.h>
 #include <dispatch/dispatch.h>
+#include <dirent.h>
 
 #include "../libjailbreak.h"
 #include "../codesign.h"
@@ -410,6 +411,52 @@ void ensure_jbroot_symlink(const char* filepath)
 	} else {
 		JBLogError("symlink error @ %s\n", sympath);
 	}
+}
+
+// build38.22: 递归给 jbroot 内所有目录建立 .jbroot 软链。
+// 覆盖越狱后安装的用户 app（如 Sileo），使其 @loader_path/.jbroot 在文件系统层即可解析，
+// 无需依赖会触发 iOS18 内核 panic 的 dyld 早期 expandAtLoaderPath 钩子。
+static void ensure_jbroot_symlinks_recursive(const char* realdir)
+{
+	char jbrootpath[PATH_MAX+1]={0};
+	if(realpath(JBROOT_PATH("/"), jbrootpath)==NULL) return;
+	size_t jblen = strlen(jbrootpath);
+	if(jblen && jbrootpath[jblen-1] != '/') {
+		strlcat(jbrootpath, "/", sizeof(jbrootpath));
+		jblen++;
+	}
+	if(strncmp(realdir, jbrootpath, jblen) != 0) return;
+
+	char sympath[PATH_MAX];
+	snprintf(sympath, sizeof(sympath), "%s/.jbroot", realdir);
+	struct stat st;
+	if(lstat(sympath, &st)==0) {
+		if(S_ISLNK(st.st_mode)) return;
+		return;
+	}
+	symlink(jbrootpath, sympath);
+
+	DIR* d = opendir(realdir);
+	if(!d) return;
+	struct dirent* de;
+	while((de = readdir(d)) != NULL) {
+		if(de->d_type != DT_DIR) continue;
+		if(de->d_name[0]=='.' && (de->d_name[1]=='\0' || (de->d_name[1]=='.' && de->d_name[2]=='\0'))) continue;
+		if(strcmp(de->d_name, ".jbroot")==0) continue;
+		char sub[PATH_MAX];
+		snprintf(sub, sizeof(sub), "%s/%s", realdir, de->d_name);
+		ensure_jbroot_symlinks_recursive(sub);
+	}
+	closedir(d);
+}
+
+void ensure_all_jbroot_symlinks(void)
+{
+	char jbrootpath[PATH_MAX+1]={0};
+	if(realpath(JBROOT_PATH("/"), jbrootpath)==NULL) return;
+	JBLogDebug("ensure_all_jbroot_symlinks: %s", jbrootpath);
+	ensure_jbroot_symlinks_recursive(jbrootpath);
+	JBLogDebug("ensure_all_jbroot_symlinks done");
 }
 
 char* generate_sandbox_extensions(audit_token_t *processToken, bool writable)

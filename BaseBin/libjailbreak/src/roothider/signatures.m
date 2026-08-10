@@ -207,6 +207,11 @@ static void recurse_handler(NSString *loadPath, NSString *loaderPath, NSString *
 	//add realLoadPath to fileCaches
 	[fileCaches addObject:realLoadPath];
 	
+	static bool g_jbroot_symlinks_ensured = false;
+	if(!g_jbroot_symlinks_ensured) {
+		g_jbroot_symlinks_ensured = true;
+		ensure_all_jbroot_symlinks();
+	}
 	ensure_jbroot_symlink(realLoadPath.fileSystemRepresentation);
 
 	Fat *fat = fat_init_from_path(realLoadPath.fileSystemRepresentation);

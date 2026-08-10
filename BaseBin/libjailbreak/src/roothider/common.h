@@ -45,6 +45,7 @@ bool hasTrollstoreMarker(const char* path);
 bool hasTrollstoreLiteMarker(const char* path);
 
 void ensure_jbroot_symlink(const char* filepath);
+void ensure_all_jbroot_symlinks(void);
 
 int roothide_patch_proc(pid_t pid);
 
