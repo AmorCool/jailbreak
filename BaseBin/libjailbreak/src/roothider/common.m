@@ -431,11 +431,22 @@ static void ensure_jbroot_symlinks_recursive(const char* realdir)
 	snprintf(sympath, sizeof(sympath), "%s/.jbroot", realdir);
 	struct stat st;
 	if(lstat(sympath, &st)==0) {
-		if(S_ISLNK(st.st_mode)) return;
-		return;
+		if(!S_ISLNK(st.st_mode)) return; // 同名非软链，异常目录，不动
+		// build38.27: 之前这里"已有软链就直接 return"，导致 .jbroot 软链
+		// 一旦建立，整棵递归就提前终止——之后新装进 jbroot 的 app（Sileo 等）
+		// 永远补不上链。改为：校验软链指向，正确则继续递归子目录，错误则重建。
+		struct stat jbst;
+		struct stat jbrootst;
+		if(stat(sympath, &jbst)==0 && stat(jbrootpath, &jbrootst)==0) {
+			if(jbst.st_dev==jbrootst.st_dev && jbst.st_ino==jbrootst.st_ino) {
+				goto recurse_subdirs; // 指向正确，继续递归
+			}
+		}
+		unlink(sympath); // 指向错误，重建
 	}
 	symlink(jbrootpath, sympath);
 
+recurse_subdirs:
 	DIR* d = opendir(realdir);
 	if(!d) return;
 	struct dirent* de;

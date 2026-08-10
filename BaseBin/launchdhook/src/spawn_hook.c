@@ -71,6 +71,16 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 					   char *const envp[restrict])
 {
 	if (path) {
+		// build38.27: 38.22 的 ensure_jbroot_symlink 加在 roothide_launchd___posix_spawn_prehook
+		// （roothider.m）里，但该 prehook 从未被任何地方注册/调用（死代码），导致
+		// @loader_path/.jbroot 软链从未被建 → dyld 加载 Sileo 等 jbroot app 时
+		// "Library not loaded: @loader_path/.jbroot/usr/lib/libroothide.dylib" → 黑屏闪退。
+		// 真正被 initSpawnHooks 注册的入口是 __posix_spawn_hook，在此补上建链调用。
+		// ensure_jbroot_symlink 对非 jbroot 路径无副作用（直接 return），幂等可重复调用。
+		bootlog("SPAWN path=%s", path);
+		extern void ensure_jbroot_symlink(const char* filepath);
+		ensure_jbroot_symlink(path);
+
 		char executablePath[1024];
 		uint32_t bufsize = sizeof(executablePath);
 		_NSGetExecutablePath(&executablePath[0], &bufsize);
