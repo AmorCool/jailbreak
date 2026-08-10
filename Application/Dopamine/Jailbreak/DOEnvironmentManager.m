@@ -281,12 +281,15 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
 - (BOOL)isJailbroken
 {
 /************** roothide specific ***********/
-    // roothide merge: 对齐 rh2 —— 先查 roothide 判定（App 是否被 roothide 信任/白名单），
-    // 再查 CS_PLATFORM_BINARY；rootless 的 jbclient_dopamine_is_jailbroken 域在 roothide 下不可靠
-    if(!jbclient_roothide_jailbroken())
-        return NO;
+    // roothide merge: 对齐 rh2 —— roothide 下 Dopamine app 是普通隐藏 App，不是 platform binary，
+    // 不能用 CS_PLATFORM_BINARY 判定。jailbroken 与否完全由 roothide 信任检查决定：
+    // launchdhook 注入后 jbserver 才存在，roothide_jailbroken_check 永远返回 true；
+    // 冷启动（未注入）时查不到 jbserver → 返回 false。故 roothide 检查通过即已越狱。
+    if(jbclient_roothide_jailbroken())
+        return YES;
 /************** roothide specific ********/
 
+    // 非 roothide(rootless) 回退：Dopamine app 自身为 platform binary 时判定已越狱
     static BOOL jailbroken = NO;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
