@@ -14,6 +14,15 @@
 #include "bootlog.h"
 extern char **environ;
 
+// build38.43: 黑名单判定符号（libjailbreak roothider/blacklist.m 提供）。
+// 38.34 回退 prehook 接线时，rh2 里挂在 prehook 的 isBlacklistedPath 黑名单判定
+// 被一起废弃 → RootHide Manager 黑名单（屏蔽）从未生效。这里在 3.x 原生
+// __posix_spawn_hook 入口处补回判定（与 rh2 prehook 语义一致：黑名单进程不注入）。
+extern bool isBlacklistedPath(const char* path);
+extern pid_t* allocBlacklistProcessId(void);
+extern void commitBlacklistProcessId(pid_t* pidp);
+#include "../systemhook/src/common/envbuf.h"
+
 // build38.32: 这两个 roothide spawn hook 在 roothider.m 中定义，需在文件顶部声明，
 // 因为 __posix_spawn_hook（上方）与 initSpawnHooks（下方）都会用到；
 // 原先声明放在文件末尾导致 __posix_spawn_hook 使用时未声明 → 编译失败。
@@ -231,6 +240,34 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	// + 插件无效 + TSLite 报错。roothide_launchd_trust_executable 在 dyld_patch
 	// 关闭时走 roothide_trust_executable_recurse（递归信任 jbroot 内全部文件）。
 	// 仅改 trust 回调，不回退 posthook（DYLD_IN_CACHE=0 黑屏根因仍保持 38.34 的修复）。
+
+	// build38.43: 恢复黑名单判定（RootHide Manager 屏蔽）。
+	// 38.34 回退 prehook 后 isBlacklistedPath 从未被调用 → 屏蔽完全失效。
+	// 与 rh2 prehook 一致：黑名单 app 不注入 systemhook（原样 spawn），
+	// 同时记录到 blacklist 进程表供 xpc_hook 隐藏进程/job。
+	bool roothideBlacklisted = isBlacklistedPath(path);
+	if (roothideBlacklisted)
+	{
+		bootlog("blacklisted app %s", path);
+		char **envc = envbuf_mutcopy((const char **)envp);
+		envbuf_unsetenv(&envc, "_SafeMode");
+		envbuf_unsetenv(&envc, "_MSSafeMode");
+		volatile pid_t* blacklistedPidp = allocBlacklistProcessId();
+		int ret = __posix_spawn_orig_wrapper(blacklistedPidp, path, desc, argv, envc);
+		pid_t bpid = *blacklistedPidp;
+		if (pidp) *pidp = bpid;
+		commitBlacklistProcessId(blacklistedPidp);
+		envbuf_free(envc);
+		if (ret == 0 && bpid > 0) {
+			short flags = 0;
+			if (desc && desc->attrp) posix_spawnattr_getflags(&desc->attrp, &flags);
+			if ((flags & POSIX_SPAWN_START_SUSPENDED) != 0) {
+				platform_set_process_debugged(bpid, false);
+			}
+		}
+		return ret;
+	}
+
 	return posix_spawn_hook_shared(pid, path, desc, argv, envp, __posix_spawn_orig_wrapper, roothide_launchd_trust_executable, platform_set_process_debugged, jbsetting(jetsamMultiplier));
 }
 
