@@ -100,29 +100,29 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 					   char *const argv[restrict],
 					   char *const envp[restrict])
 {
-	// build38.53: 让 Sileo 主进程以 root 运行（用户要求 2026-08-11）
-	// 原因：Sileo(mobile) 装卸插件需调 dpkg/apt 写 /Library/dpkg（root 才有权限）；
-	// 原本依赖 Sileo 自身的 spawnAsRoot(persona=99 OVERRIDE) 链——iOS17.6+ persona 被封，
-	// 需 systemhook 注入 + launchdhook 的 JBS_SYSTEMWIDE_PERSONA_FIX 改 ucred 链，任一环断
-	// 则 dpkg 以 mobile 身份跑，写 /Library/dpkg 报无权限。用户在 iOS16.3.1 (< 17.6)，
-	// persona override 不被封禁，直接 set persona uid=0 OVERRIDE 让 launchd 以 root spawn
-	// Sileo 即可绕开整条 spawnAsRoot 链——Sileo 进程本身是 root，任意写文件 + 调 dpkg。
-	// systemhook 仍注入（普通分支），让 Sileo 能调 jbclient 维持 jbroot 环境。
-	// iOS17.6+ 跳过（persona 封禁无效）。
+	// build38.54: 完全手动设置 persona_info，绕过 posix_spawnattr_set_persona_np 不确定性。
+	// 38.53 用 posix_spawnattr_set_persona_np + 读 *pinfo_p 设 uid/gid，实测 Sileo 仍报
+	// 无权限（用户截图 18:57）——set_persona_np 可能只设 attr 元数据未分配 personaInfo 结构，
+	// *pinfo_p 为 NULL 跳过 uid/gid 设，Sileo 仍以默认 mobile 启动。
+	// 修复：分配 static personaInfo（launchd 常驻，安全），直接写入 attr + OFF_PERSONA。
+	// 同时兼容 com.opa334.Sileo（Sileo.app/Sileo）和 org.coolstar.SileoStore
+	// （SileoStore.app/SileoStore），以及 jbroot 内变长路径（sbxx_sileo 等）。
 	if (path && desc && desc->attrp
-		&& string_has_suffix(path, "/Sileo.app/Sileo")
-		&& !__builtin_available(iOS 17.6, *)) {
+		&& !__builtin_available(iOS 17.6, *)
+		&& (string_has_suffix(path, "/Sileo.app/Sileo")
+			|| string_has_suffix(path, "/SileoStore.app/SileoStore"))) {
 		posix_spawnattr_t attr = desc->attrp;
-		posix_spawnattr_set_persona_np(attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
-		struct _posix_spawn_persona_info **pinfo_p =
-			(struct _posix_spawn_persona_info **)((uint8_t *)attr + POSIX_SPAWNATTR_OFF_PERSONA);
-		if (pinfo_p && *pinfo_p) {
-			(*pinfo_p)->pspi_uid = 0;
-			(*pinfo_p)->pspi_gid = 0;
-			bootlog("roothide: Sileo set persona uid=0 OVERRIDE (root spawn bypass spawnAsRoot chain)");
-		} else {
-			bootlog("roothide: Sileo setpersona_np ok but pinfo_p=%p *pinfo_p=%p (persona_info may be lazily allocated by launchd)", pinfo_p, pinfo_p ? *pinfo_p : NULL);
+		static struct _posix_spawn_persona_info sileoRootPersona;
+		static bool initialized = false;
+		if (!initialized) {
+			sileoRootPersona.pspi_id = 99;
+			sileoRootPersona.pspi_flags = POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE;
+			sileoRootPersona.pspi_uid = 0;
+			sileoRootPersona.pspi_gid = 0;
+			initialized = true;
 		}
+		*(struct _posix_spawn_persona_info **)((uint8_t *)attr + POSIX_SPAWNATTR_OFF_PERSONA) = &sileoRootPersona;
+		bootlog("roothide: Sileo persona override INJECTED (uid=0 gid=0 persona=99 OVERRIDE)");
 	}
 
 	if (path) {
