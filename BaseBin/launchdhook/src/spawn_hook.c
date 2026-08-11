@@ -316,7 +316,7 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		roothide_launchd_trust_executable(path);
 
 		errno = 0;
-		int ret = __posix_spawn_orig_wrapper(pidp, path, desc, argv, envc);
+		int ret = __posix_spawn_orig_wrapper(pid, path, desc, argv, envc);
 		bootlog("blacklisted app %s -> orig ret=%d errno=%d (%s)", path, ret, errno, strerror(errno));
 		envbuf_free(envc);
 		return ret;

@@ -20,8 +20,12 @@ NSString *getAppBundlePathFromSpawnPath(const char *path) {
     char *p2 = strchr(p1, '/');
     if (!p2) return nil;
 
-    //is normal app or jailbroken app/daemon?
-    if ((p2 - p1) != (sizeof(NULL_UUID) - 1))
+    //is normal app, jailbroken app/daemon, or roothide jbroot app?
+    // 标准 App Store: 36 字符 UUID；roothide jbroot: ".jbroot-" + 16 hex = 24 字符
+    // 原代码只接受 36 字符 UUID，导致越狱自装应用（jbroot 内）isBlacklistedPath 永远 false
+    // → RootHideManager 屏蔽对 jbroot 应用无效（用户反馈 2026-08-11）
+    bool isJbroot = (p2 - p1 > 8 && strncmp(p1, ".jbroot-", 8) == 0);
+    if (!isJbroot && (p2 - p1) != (sizeof(NULL_UUID) - 1))
         return nil;
 
     char *p = strstr(p2, ".app/");

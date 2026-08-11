@@ -204,6 +204,14 @@ void roothide_launchd_postinit(bool firstLoad)
 		// systemhook 注入 + persona fix 链（iOS17.6+ 封禁 root persona），任一环降级
 		// → 目录保持 root:wheel → Sileo 永远无权限。launchdhook 跑在 launchd(root) 里，
 		// 在用户空间重启后、任何 app 启动前直接 chown，不依赖注入链（幂等）。
+		//
+		// build38.52: 实测（用户截图 2026-08-11 15:55）38.48 修复后 sileolists 仍是
+		// root:mobile 0755——chown 只设了 gid（501），uid 仍是 0（chown 在某些条件下
+		// 无法改 uid），且 0755 让 mobile 组只读不可写，Sileo 写不了 sileolists 下的
+		// root-owned Packages（spawnAsRoot 链断时退化 mobile，root 文件 mobile 不可写）。
+		// 修复：chmod 0775（mobile 组可写），即使属主是 root，Sileo(mobile) 也能通过
+		// 组权限 rm 旧 root 文件 + 写入新 mobile 文件。chown 失败不再阻塞（gid 已设）。
+		// bootlog（写入 /var/mobile/Media/.../launchdhook_boot.log）记录失败让用户可查。
 		{
 			const char *mobileDirs[] = {
 				JBROOT_PATH("/var/lib/apt"),
@@ -212,17 +220,17 @@ void roothide_launchd_postinit(bool firstLoad)
 			};
 			for (int i = 0; i < (int)(sizeof(mobileDirs) / sizeof(mobileDirs[0])); i++) {
 				const char *p = mobileDirs[i];
-				if (mkdir(p, 0755) != 0 && errno != EEXIST) {
-					// ignore: parent may be missing on first boot, try chown anyway
+				if (mkdir(p, 0775) != 0 && errno != EEXIST) {
+					bootlog("roothide sileolists: mkdir %s failed errno=%d %s", p, errno, strerror(errno));
 				}
 				if (chown(p, 501, 501) != 0) {
-					JBLogError("roothide: chown %s to mobile failed: %s", p, strerror(errno));
+					bootlog("roothide sileolists: chown %s -> 501:501 failed errno=%d %s (gid may have been set)", p, errno, strerror(errno));
 				}
-				if (chmod(p, 0755) != 0) {
-					JBLogError("roothide: chmod %s failed: %s", p, strerror(errno));
+				if (chmod(p, 0775) != 0) {
+					bootlog("roothide sileolists: chmod %s 0775 failed errno=%d %s", p, errno, strerror(errno));
 				}
 			}
-			JBLogError("roothide: sileolists/apt dirs ownership fixed (mobile:mobile 501:501)");
+			bootlog("roothide sileolists: apt/sileolists/operations set to 0775 root:mobile (mobile group writable)");
 		}
 	}
 
