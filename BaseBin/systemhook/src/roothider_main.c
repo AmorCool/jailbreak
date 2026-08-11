@@ -541,44 +541,34 @@ void roothide_init_with_executable(const char* executable)
 		loadPathHook(); //requre jit
 	}
 
-	// build38.59: 调用 roothidehooks.dylib 里的进程特定 Init（lsdInit/cfprefsdInit/
-	// sbInit/installdInit），让 rh2 的隐藏机制（URL scheme / LaunchServices / UTI /
-	// SpringBoard 启动过滤）真正生效。
+	// build38.60: 回滚 38.59 的 lsdInit/cfprefsdInit/sbInit/installdInit 调用。
 	//
-	// 之前 38.56 仅调了 pathhook() 和 palera1n()，roothidehooks.dylib 里实现的
-	// _LSCanOpenURLManager/canOpenURL/_LSDOpenClient/_LSDReadClient 等 Logos hook
-	// **从未被注册**。结果：黑名单 app 仍能 query jbroot URL scheme、仍能在
-	// LaunchServices 里看到 jbroot app 的 UTI/URL scheme 注册——原版 rh2 在这些
-	// 进程注入这些 hook 才隐藏得住，用户实测"原版 roothide 不会"就是因为这些 hook
-	// 没装载。
+	// 38.59 在 roothide_init_with_executable 末尾 dlopen roothidehooks.dylib 并按
+	// executable 后缀调对应 Init——**导致越狱后白苹果黑屏**。
 	//
-	// 关键：这些 Init 必须在 redirect_paths 之外调，且必须在目标进程执行主循环前
-	// 完成（否则 hook 漏掉早期 XPC 请求）。roothide_init_with_executable 由 systemhook
-	// 的 dyld hook 在 main() 之前调用，时机正确。
-	{
-		void* rhHooksLib = dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
-		if (rhHooksLib) {
-			// 顺序匹配 roothidehooks/main.x %ctor：installd/cfprefsd/lsd/SpringBoard
-			if (string_has_suffix(executable, "/installd")) {
-				void (*installdInit)(void) = dlsym(rhHooksLib, "installdInit");
-				if (installdInit) installdInit();
-			}
-			else if (string_has_suffix(executable, "/cfprefsd")) {
-				void (*cfprefsdInit)(void) = dlsym(rhHooksLib, "cfprefsdInit");
-				if (cfprefsdInit) cfprefsdInit();
-			}
-			else if (string_has_suffix(executable, "/lsd")) {
-				void (*lsdInit)(void) = dlsym(rhHooksLib, "lsdInit");
-				if (lsdInit) lsdInit();
-			}
-			else if (string_has_suffix(executable, "/SpringBoard")) {
-				void (*sbInit)(void) = dlsym(rhHooksLib, "sbInit");
-				if (sbInit) sbInit();
-			}
-			// pathhook 已在上方 Dopamine 分支调过；palera1n 已在 arm64e 排除分支调过
-			// ——不重复。
-		}
-	}
+	// 真因（结合 38.34 的经验）：roothide_init_with_executable 由 systemhook.dylib 的
+	// dyld hook 在目标进程 main() 之前调，时机极早：
+	//   1. roothidehooks.dylib 是 Logos/Substrate 模块，依赖 libsubstrate/CydiaSubstrate
+	//      已被 dlopen。SpringBoard/lsd/cfprefsd 的 main() 之前 libsubstrate 不一定已
+	//      装载（systemhook.dylib 自身是 CydiaSubstrate 注入的，但前置 dlopen 可能未完成）。
+	//   2. %init() 内部 MSFindSymbol 找 CoreServices/_LSCanOpenURLManager 等符号，
+	//      早期 dlopen CoreServices 还没就绪 → MSFindSymbol 返回 NULL → %init 内部
+	//      deref NULL → SIGSEGV。
+	//   3. 即便不崩，roothidehooks.dylib 的 %ctor（main.x）根据进程名 dispatch——
+	//      我们这里 dlopen 多次 + 调 Init，导致 SpringBoard 启动时双 dispatch 或
+	//      dispatch_once 状态错乱 → SpringBoard 卡在初始化 → 白苹果。
+	//
+	// 与 38.34 的 posthook 黑屏是同一根因：rh2 spawn 链（prehook+posthook+Init）
+	// 必须由 launchdhook 在 spawn 阶段驱动，**不能**由 systemhook 的 dyld hook 自行
+	// 触发。rh2 prehook 在 init.c 装载 launchdhook 时立刻 dlopen roothidehooks（让
+	// dyld 缓存），然后 spawn 时 posthook 通过 dlsym 调对应 Init。我们 3.x 没接
+	// prehook/posthook，所以这层 Init 不能恢复——38.59 强行恢复就触发了 38.34 同样的死锁。
+	//
+	// 修法：URL scheme 隐藏问题不在 38.59 修复，单独另想办法（不依赖 roothidehooks
+	// Init）。本 commit 只回滚，不引入新路径，保持 38.58 的稳定状态。
+	//
+	// pathhook（Dopamine 分支）和 palera1n（arm64e 排除分支）保留——它们只是 dlopen
+	// dylib，不调 Logos %init，是安全的。
 
 	dlopen(JBROOT_PATH("/usr/lib/roothidepatch.dylib"), RTLD_NOW); //require jit
 }
