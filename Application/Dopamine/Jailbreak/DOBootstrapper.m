@@ -1032,9 +1032,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // rm 能删掉 mobile 拥有的 sileolists（38.31 已 chown），但 mkdir 时父目录
     // /var/lib/apt 若仍是 root:wheel 0755 → mobile 无权限建目录 → “文件夹不存在”
     // 依旧。把 /var/lib/apt 及 sileolists 全部 chown mobile:mobile，两条路径都成立。
-    exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
-    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
-    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", JBROOT_PATH("/var/lib/apt").fileSystemRepresentation, NULL);
+    exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", JBROOT_PATH("/var/lib/apt"), NULL);
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", JBROOT_PATH("/var/lib/apt"), NULL);
+    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", JBROOT_PATH("/var/lib/apt"), NULL);
     NSArray *mobileOwnedDirs = @[
         @"/var/lib/apt/sileolists",             // 图三报错的父目录
         @"/var/lib/apt/sileolists/operations",  // buildOperations() 用 try! 创建，父目录缺失会直接崩溃
