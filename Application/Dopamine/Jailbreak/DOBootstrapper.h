@@ -33,6 +33,10 @@ typedef NS_ENUM(NSInteger, BootstrapErrorCode) {
 - (NSError *)installPackageManagers;
 - (NSError *)finalizeBootstrap;
 - (NSError *)deleteBootstrap;
+// build38.45: 把 sileolists/apt 目录权限修复从 finalizeBootstrap 中拆出独立方法，
+// 供 DOJailbreaker 主流程在越狱早期（elevatePrivileges 后）显式调用——
+// PPL bypass 阶段 panic 会打断 finalize，导致 chown 从未执行（Sileo 报 sileolists 无权限）。
+- (void)ensureSileoAndAptDirectories;
 
 // roothide specific: jbrand 随机 jbroot 路径机制
 - (NSError *)ensureJbrandRootExists;

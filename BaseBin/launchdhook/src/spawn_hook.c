@@ -1,4 +1,5 @@
 #include <spawn.h>
+#include <errno.h>
 #include "../systemhook/src/common/common.h"
 #include "boomerang.h"
 #include "crashreporter.h"
@@ -245,10 +246,28 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	// 38.34 回退 prehook 后 isBlacklistedPath 从未被调用 → 屏蔽完全失效。
 	// 与 rh2 prehook 一致：黑名单 app 不注入 systemhook（原样 spawn），
 	// 同时记录到 blacklist 进程表供 xpc_hook 隐藏进程/job。
+	// build38.45: 补上 rh2 prehook 里的两条 EPERM 拦截（38.43 遗漏）：
+	//   a) 屏蔽 app 的 PlugIns/Extensions/.appex 子进程 → 直接拒绝，否则扩展进程
+	//      仍会被注入/以旧缓存启动 → 屏蔽 app 的扩展残留越狱痕迹；
+	//   b) 屏蔽 app 的 ActivePrewarm / DYLD_USE_CLOSURES 预热进程 → 直接拒绝，
+	//      否则系统用 prewarm 缓存启动 app（缓存里带着注入配置）→ app 启动即闪退
+	//      （用户实测：开启黑名单后目标 app 闪退，先关闭屏蔽打开 app 再开启才正常，
+	//       正是 prewarm 缓存未清除导致）。
 	bool roothideBlacklisted = isBlacklistedPath(path);
 	if (roothideBlacklisted)
 	{
 		bootlog("blacklisted app %s", path);
+
+		// rh2 prehook 语义：屏蔽 app 的扩展/预热进程直接拒绝（EPERM 让 launchd 重试/跳过）
+		if (strstr(path, "/PlugIns/") || strstr(path, "/Extensions/") || strstr(path, ".appex/")) {
+			bootlog("prevent blacklisted app's extension from running: %s", path);
+			return EPERM;
+		}
+		if (envbuf_getenv(envp, "ActivePrewarm") || envbuf_getenv(envp, "DYLD_USE_CLOSURES")) {
+			bootlog("prevent blacklisted app from prewarming: %s", path);
+			return EPERM;
+		}
+
 		char **envc = envbuf_mutcopy((const char **)envp);
 		envbuf_unsetenv(&envc, "_SafeMode");
 		envbuf_unsetenv(&envc, "_MSSafeMode");

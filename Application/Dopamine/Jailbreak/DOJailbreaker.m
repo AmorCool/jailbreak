@@ -740,6 +740,14 @@ void *boomerang_server(struct boomerang_info *info)
         return;
     }
     
+    // build38.45: 提前修复 sileolists/apt 目录权限，不依赖 finalizeBootstrap 跑完。
+    // PPL bypass 阶段内核 panic 会打断越狱流程（实测 panic-full-*.ips），finalize 从未执行
+    // → ensureSileoAndAptDirectories（chown mobile:mobile）从未跑 → Sileo 装/卸插件
+    // 报"没有权限存储到 sileolists 文件夹"。这里在 createFakeLib 后、finalize 前
+    // 提前执行（此时已 root + jbroot 已解压 + launchdhook 已注入），保证即使后面
+    // 任何一步中断，sileolists 权限也已经修好。finalizeBootstrap 内的调用保留（幂等）。
+    [[DOEnvironmentManager sharedManager] ensureSileoAndAptDirectories];
+    
     // Unsandbox iconservicesagent so that app icons can work
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/killall"), "-9", "iconservicesagent", NULL);
     

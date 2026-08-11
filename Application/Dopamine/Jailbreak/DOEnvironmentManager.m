@@ -791,6 +791,12 @@ CFPropertyListRef MGCopyAnswer(CFStringRef);
     return [_bootstrapper finalizeBootstrap];
 }
 
+- (void)ensureSileoAndAptDirectories
+{
+    // build38.45: 幂等调用（每次越狱都跑，不依赖 finalize 完整执行）
+    [_bootstrapper ensureSileoAndAptDirectories];
+}
+
 - (NSError *)deleteBootstrap
 {
     if (![self isJailbroken] && getuid() != 0) {

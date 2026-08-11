@@ -75,6 +75,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSError *)prepareBootstrap;
 - (NSError *)finalizeBootstrap;
 - (NSError *)deleteBootstrap;
+// build38.45: 转发到 DOBootstrapper，供 DOJailbreaker 主流程在越狱早期调用
+//（修复 sileolists/apt 目录权限，防止 PPL panic 打断 finalize 导致 Sileo 无权限）
+- (void)ensureSileoAndAptDirectories;
 - (NSError *)reinstallPackageManagers;
 - (NSError *)updateBootLogo;
 - (void)mountDictionary:(NSDictionary *)dictionary writeToFile:(NSString *)path;
