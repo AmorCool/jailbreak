@@ -19,6 +19,7 @@
 #import <sys/sysctl.h>
 #import <sys/wait.h>
 #import <signal.h>
+#import <errno.h>
 #import "NSString+Version.h"
 
 #define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.3"
@@ -1032,23 +1033,45 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // rm 能删掉 mobile 拥有的 sileolists（38.31 已 chown），但 mkdir 时父目录
     // /var/lib/apt 若仍是 root:wheel 0755 → mobile 无权限建目录 → “文件夹不存在”
     // 依旧。把 /var/lib/apt 及 sileolists 全部 chown mobile:mobile，两条路径都成立。
-    exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", JBROOT_PATH("/var/lib/apt"), NULL);
-    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", JBROOT_PATH("/var/lib/apt"), NULL);
-    exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", JBROOT_PATH("/var/lib/apt"), NULL);
+    // build38.45: 弃用 exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"))——
+    // finalize 阶段 jbroot 内二进制可能尚未入 trustcache / 子进程无 sandbox extension
+    // 访问 jbroot → posix_spawn 失败（ENOENT/EACCES），且原代码不检查返回值 → chown
+    // 静默失败 → sileolists 保持 root:wheel → Sileo(mobile) 写不了 → "没有权限存储到
+    // sileolists"。改用 C 系统调用 mkdir()/chown()/chmod()（libc 直调内核，无需信任、
+    // 无需 sandbox extension），逐项检查返回值并记日志。
+    const char *aptDir = JBROOT_PATH("/var/lib/apt");
+    if (mkdir(aptDir, 0755) != 0 && errno != EEXIST) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
+    if (chown(aptDir, 501, 501) != 0) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
+    if (chmod(aptDir, 0755) != 0) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
     NSArray *mobileOwnedDirs = @[
         @"/var/lib/apt/sileolists",             // 图三报错的父目录
         @"/var/lib/apt/sileolists/operations",  // buildOperations() 用 try! 创建，父目录缺失会直接崩溃
     ];
     for (NSString *d in mobileOwnedDirs) {
         NSString *p = JBROOT_PATH(d);
-        exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", p.fileSystemRepresentation, NULL);
-        exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "-R", "mobile:mobile", p.fileSystemRepresentation, NULL);
-        exec_cmd_trusted(JBROOT_PATH("/usr/bin/chmod"), "-R", "0755", p.fileSystemRepresentation, NULL);
+        const char *pC = p.fileSystemRepresentation;
+        if (mkdir(pC, 0755) != 0 && errno != EEXIST) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", pC, strerror(errno)] debug:YES];
+        }
+        if (chown(pC, 501, 501) != 0) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", pC, strerror(errno)] debug:YES];
+        }
+        if (chmod(pC, 0755) != 0) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", pC, strerror(errno)] debug:YES];
+        }
     }
 
     // 2) apt / dpkg 自用目录，保持 root:wheel。
     //    /Library/dpkg/updates 是 dpkg 的 status journal 目录，Sileo 与 apt 判定
     //    “dpkg 被中断”读的就是它，缺失会让 dpkg 无法写事务日志。
+    // build38.45: 同上改用 C mkdir()（原 exec_cmd_trusted 在 finalize 阶段
+    // 可能因 trustcache/sandbox 未就绪而失败）。
     NSArray *rootOwnedDirs = @[
         @"/var/lib/apt/lists/partial",
         @"/var/cache/apt/archives/partial",
@@ -1059,7 +1082,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     ];
     for (NSString *d in rootOwnedDirs) {
         NSString *p = JBROOT_PATH(d);
-        exec_cmd_trusted(JBROOT_PATH("/bin/mkdir"), "-p", p.fileSystemRepresentation, NULL);
+        if (mkdir(p.fileSystemRepresentation, 0755) != 0 && errno != EEXIST) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", p.fileSystemRepresentation, strerror(errno)] debug:YES];
+        }
     }
 }
 

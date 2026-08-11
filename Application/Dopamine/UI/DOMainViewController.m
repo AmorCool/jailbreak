@@ -34,6 +34,19 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self setupStack];
+
+    // build38.45: 已越狱状态下（按钮禁用、finalize 不再执行）也修复 sileolists/apt 权限。
+    // 背景：finalizeBootstrap 只在按越狱按钮时跑一次；若那次 chown 因 jbroot 二进制未
+    // 入 trustcache 而静默失败，重启后按钮禁用 → 永远没机会重试 → Sileo 一直报
+    // "没有权限存储到 sileolists"。这里在每次 app 启动时兜底重跑（幂等）。
+    // app 已越狱状态以 mobile 身份运行，chown 需 root → runAsRoot 内部 jbclient 提权。
+    if ([[DOEnvironmentManager sharedManager] isJailbroken]) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            [[DOEnvironmentManager sharedManager] runAsRoot:^{
+                [[DOEnvironmentManager sharedManager] ensureSileoAndAptDirectories];
+            }];
+        });
+    }
 }
 
 -(void)setupStack
