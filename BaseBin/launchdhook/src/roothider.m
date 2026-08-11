@@ -190,7 +190,13 @@ void roothide_launchd_postinit(bool firstLoad)
 		// 结果后续进程 access(HOOK_DYLIB_PATH) 失败、systemhook 不注入 → Sileo spawnAsRoot 提权失败、
 		// sileolists 建不出。这里在 postinit 里显式挂载一次（幂等，已挂载则跳过）。
 		ensure_fakelib_mounted();
-		JBLogError("roothide: HOOK_DYLIB_PATH=%s, fakelib mount attempted.", HOOK_DYLIB_PATH);
+		// 立即验证：mount 后 access(HOOK_DYLIB_PATH) 是否成功。
+		// 若失败则 systemhook 不注入任何进程 → 插件无效 + Sileo 无权限。
+		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
+			JBLogError("roothide: CRITICAL: access(%s) failed after fakelib mount (errno=%d, %s)! systemhook will NOT inject.", HOOK_DYLIB_PATH, errno, strerror(errno));
+		} else {
+			JBLogError("roothide: HOOK_DYLIB_PATH=%s verified accessible, fakelib mount OK.", HOOK_DYLIB_PATH);
+		}
 	}
 
 	if (__builtin_available(iOS 16.0, *))

@@ -52,19 +52,31 @@ void early_boot_done(void)
 void ensure_fakelib_mounted(void)
 {
 	struct statfs fsb;
-	if (statfs("/usr/lib", &fsb) != 0) return;
+	if (statfs("/usr/lib", &fsb) != 0) {
+		bootlog("FAKELIB statfs(/usr/lib) failed!");
+		return;
+	}
 	if (strcmp(fsb.f_mntonname, "/usr/lib") != 0) {
+		bootlog("FAKELIB not mounted (f_mntonname=%s), attempting mount...", fsb.f_mntonname);
 		systemwide_domain_set_enabled(true);
 
 		// The jailbreak server is not reachable at this point in the launchd lifecycle
 		// So we need to host our own, just so that jbctl can talk to it
 		mach_port_t serverPort = jbserver_local_start();
-		jbctl_earlyboot(serverPort, "internal", "fakelib", "mount", NULL);
+		int rc = jbctl_earlyboot(serverPort, "internal", "fakelib", "mount", NULL);
 		jbserver_local_stop();
+
+		if (rc == 0) {
+			bootlog("FAKELIB mount OK via jbctl_earlyboot");
+		} else {
+			bootlog("FAKELIB mount FAILED: jbctl_earlyboot returned %d (errno=%d)", rc, rc != 0 ? rc : 0);
+		}
 
 		// Note down that the jailbreak was hidden
 		// So that after the userspace reboot, we can unmount fakelib again
 		setenv("DOPAMINE_IS_HIDDEN", "1", true);
+	} else {
+		bootlog("FAKELIB already mounted (f_mntonname=%s)", fsb.f_mntonname);
 	}
 }
 

@@ -8,6 +8,8 @@
 #include <paths.h>
 #include <sys/stat.h>
 #include <dlfcn.h>
+#include <string.h>
+#include <errno.h>
 #include "envbuf.h"
 #include "private.h"
 #include <libjailbreak/jbclient_xpc.h>
@@ -303,6 +305,12 @@ static int spawn_exec_hook_common(bool isExec,
 		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
 			// If the hook dylib doesn't exist, don't try to inject it (would crash the process)
 			shouldInsertJBEnv = false;
+			static bool loggedOnce = false;
+			if (!loggedOnce) {
+				loggedOnce = true;
+				fprintf(stderr, "systemhook: access(%s, F_OK) failed (errno=%d, %s), injection SKIPPED.\n",
+					HOOK_DYLIB_PATH ? HOOK_DYLIB_PATH : "(null)", errno, strerror(errno));
+			}
 			break;
 		}
 	} while (0);
