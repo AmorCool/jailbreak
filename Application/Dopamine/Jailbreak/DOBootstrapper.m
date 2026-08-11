@@ -1036,51 +1036,57 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 静默失败 → sileolists 保持 root:wheel → Sileo(mobile) 写不了 → "没有权限存储到
     // sileolists"。改用 C 系统调用 mkdir()/chown()/chmod()（libc 直调内核，无需信任、
     // 无需 sandbox extension），逐项检查返回值并记日志。
-    // build38.61: 用户 22:05 截图铁证——sileolists 仍是 root:mobile 0755。
-    // 38.57/38.58 的 fts 递归 chmod 0777 + chown 501:501 没生效的真因：
-    //   1) mkdir/chmod 用的是 0775 不是 0777
-    //   2) chown 系统调用在 Dopamine app 上下文可能受 sandbox 静默拒绝
-    //   3) Sileo 启动时 spawnAsRoot("rm -rf sileolists && mkdir -p sileolists")
-    //      提权链断（iOS 17.6+）时降级为 mobile → 用 mobile 重建 → 重建的 sileolists
-    //      是 mobile:mobile 0755（不是 0777），chmod 系统调用在我代码后被 Sileo 覆盖
-    //
-    // 修法：放弃 chmod/chown 系统调用，改走 exec chown/chmod 二进制（子进程在 root
-    // 上下文 + roothide trust，chown -R 能改 root 文件属主为 mobile，chmod -R 0777
-    // 不会被 Sileo 后续操作改回去，因为 Sileo 用 mobile 身份 rm -rf 再 mkdir 时
-    // 会按 0777 创建——前提是父目录 mobile:mobile 0777 让 mobile 能创建带 0777 模式的目录）
-    //
-    // 用户明确要求：所有者=mobile、组=mobile、权限 0777（rwxrwxrwx）
-    {
-        NSArray *pathsToFix = @[
-            @"/var/lib/apt",                       // apt/ 根
-            @"/var/lib/apt/sileolists",            // 用户截图铁证 root:mobile 0755
-            @"/var/lib/apt/sileolists/operations", // buildOperations() try! 创建
-            @"/var/lib/apt/lists",                 // apt lists/
-            @"/var/lib/apt/lists/partial",         // apt partial download cache
-            @"/var/cache/apt/archives",            // 下载的 deb 缓存
-            @"/var/cache/apt/archives/partial",    // partial download
-        ];
-        for (NSString *d in pathsToFix) {
-            NSString *p = JBROOT_PATH(d);
-            const char *pC = p.fileSystemRepresentation;
-            mkdir(pC, 0777);  // 强制创建，EEXIST 忽略
-            NSString *chownBin = JBROOT_PATH(@"/usr/sbin/chown");
-            if (![[NSFileManager defaultManager] fileExistsAtPath:chownBin]) {
-                chownBin = JBROOT_PATH(@"/usr/bin/chown");
-            }
-            if ([[NSFileManager defaultManager] fileExistsAtPath:chownBin]) {
-                [self execTrustedWithTimeout:5.0 binary:chownBin arguments:@[@"-R", @"501:501", p]];
-            }
-            NSString *chmodBin = JBROOT_PATH(@"/bin/chmod");
-            if (![[NSFileManager defaultManager] fileExistsAtPath:chmodBin]) {
-                chmodBin = JBROOT_PATH(@"/usr/bin/chmod");
-            }
-            if ([[NSFileManager defaultManager] fileExistsAtPath:chmodBin]) {
-                [self execTrustedWithTimeout:5.0 binary:chmodBin arguments:@[@"-R", @"0777", p]];
-            }
-            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: exec chown -R 501:501 && chmod -R 0777 %@ done", p] debug:YES];
+    const char *aptDir = JBROOT_PATH("/var/lib/apt");
+    if (mkdir(aptDir, 0775) != 0 && errno != EEXIST) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
+    if (chown(aptDir, 501, 501) != 0) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
+    if (chmod(aptDir, 0775) != 0) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", aptDir, strerror(errno)] debug:YES];
+    }
+    NSArray *mobileOwnedDirs = @[
+        @"/var/lib/apt/sileolists",             // 图三报错的父目录
+        @"/var/lib/apt/sileolists/operations",  // buildOperations() 用 try! 创建，父目录缺失会直接崩溃
+    ];
+    for (NSString *d in mobileOwnedDirs) {
+        NSString *p = JBROOT_PATH(d);
+        const char *pC = p.fileSystemRepresentation;
+        if (mkdir(pC, 0775) != 0 && errno != EEXIST) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", pC, strerror(errno)] debug:YES];
+        }
+        if (chown(pC, 501, 501) != 0) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", pC, strerror(errno)] debug:YES];
+        }
+        if (chmod(pC, 0775) != 0) {
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", pC, strerror(errno)] debug:YES];
         }
     }
+
+    // build38.57: 整棵树递归 chmod 0777（用户图证实：owner/组/其它全部 rwx，应用到所有子项目）。
+    // 38.55 只递归了 sileolists/* 为 0664，但 sileolists/ 本身仍是 0755（mobile 组只 r-x，
+    // 不能在里面新建文件）；用户 Filza 截图证明必须整树 0777 让任何人任意写。
+    // 用 fts 递归，省事且高效。
+    NSString *aptTree = JBROOT_PATH(@"/var/lib/apt");
+    int dirCount = 0, fileCount = 0;
+    FTS *fts = fts_open((const char *[]){aptTree.fileSystemRepresentation, NULL},
+                        FTS_PHYSICAL | FTS_NOCHDIR, NULL);
+    if (fts) {
+        FTSENT *ent;
+        while ((ent = fts_read(fts)) != NULL) {
+            const char *p = ent->fts_path;
+            if (ent->fts_info == FTS_D || ent->fts_info == FTS_DP) {
+                if (chmod(p, 0777) == 0) dirCount++;
+                chown(p, 501, 501);
+            } else if (ent->fts_info == FTS_F) {
+                if (chmod(p, 0777) == 0) fileCount++;
+                chown(p, 501, 501);
+            }
+        }
+        fts_close(fts);
+    }
+    [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod -R 0777 apt tree, dirs=%d files=%d (user fix)", dirCount, fileCount] debug:YES];
 
     // 2) apt / dpkg 自用目录，保持 root:wheel。
     //    /Library/dpkg/updates 是 dpkg 的 status journal 目录，Sileo 与 apt 判定
