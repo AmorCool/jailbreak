@@ -1094,7 +1094,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 把 dpkg / Sileo 相关的现场状态落盘，便于用 AFC（爱思、iMazing 等）
     // 从 /var/mobile/Media/ 直接取出，不必装 Filza 也能定位问题。
     // 追加写入，保留历次越狱记录。
-    NSString *jbroot = JBROOT_PATH(@"");
+    // build38.40: 避开 JBROOT_PATH(@"") 的 NSString overload，该重载在 iOS 18 arm64e
+    // 某些运行时会因 path.fileSystemRepresentation 内部访问 NSSubrangeData 而崩溃。
+    const char *jbrootC = get_jbroot() ?: "";
+    NSString *jbroot = [NSString stringWithUTF8String:jbrootC];
     NSString *script = [NSString stringWithFormat:
         @"exec >> /var/mobile/Media/dopamine_dpkg_diag.log 2>&1; "
          "echo \"===== $(date) =====\"; "
