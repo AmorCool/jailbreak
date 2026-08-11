@@ -5,7 +5,6 @@
 #include "crashreporter.h"
 #include "update.h"
 #include <libjailbreak/util.h>
-#include <libjailbreak/roothider.h>
 #include <substrate.h>
 #include <mach-o/dyld.h>
 #include <sys/param.h>
@@ -23,6 +22,7 @@ extern char **environ;
 extern bool isBlacklistedPath(const char* path);
 extern pid_t* allocBlacklistProcessId(void);
 extern void commitBlacklistProcessId(pid_t* pidp);
+extern bool dyld_patch_enabled(void);
 #include "../systemhook/src/common/envbuf.h"
 
 // build38.32: 这两个 roothide spawn hook 在 roothider.m 中定义，需在文件顶部声明，
