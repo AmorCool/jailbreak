@@ -994,7 +994,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
 
 // build38.66: 设 root 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
-// iOS 18 默认 /var/master.passwd 把 root 密码字段写成 "*" (lock)，导致：
+// iOS 18 默认 master.passwd 把 root 密码字段写成 "*" (lock)，导致：
 //   - Terminal app 本地 console "login: root" → Login incorrect
 //   - sshd 接受密码登录时 root 也进不去
 // Dopamine 上游 (5bee173) 从未设过 root 密码，导致 roothide 3.x 用户没有可用 root shell。
@@ -1004,6 +1004,12 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 // build38.66 关键修：38.65 用 exec_cmd_trusted 跑 mobile uid 子进程，写 root:wheel 0600 的
 // master.passwd 必 EACCES → 静默失败。Dopamine app 进程调 runAsRoot 把 uid/gid 临时
 // 改成 0，再 runUnsandboxed 移除 sandbox，**在进程上下文直接 C 系统调用**读/写文件。
+//
+// build38.68 修：38.66/38.67 写入路径错写成 /var/master.passwd（那是 Xina 残留、rh2 会删除的
+// 文件，真实根不存在 → open ENOENT）。roothide 把 jbroot (/var/jb) 当作根，Terminal/login 读的
+// /etc/master.passwd 实际是 /var/jb/etc/master.passwd（data 卷可写；真实 /etc 在系统只读卷写不了）。
+// 且只改 master.passwd 不够——iOS 的 getpwnam/login 读 pwd_mkdb 生成的 spwd.db，必须重跑
+// /usr/sbin/pwd_mkdb -p 重生成数据库，新密码才对 login/sshd 生效。
 
 // build38.67: 持久化诊断日志。sendLog 只写内存数组 (_logRecord)，app 被杀/用户空间重启即丢，
 // 用户多次反馈"越狱完重启 app 日志就没了，没法给我看"。这里把关键诊断追加写入
@@ -1038,7 +1044,18 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
     [env runAsRoot:^{
         [env runUnsandboxed:^{
-            const char *passwdPath = "/var/master.passwd";
+            // roothide 把 jbroot (/var/jb) 当作根：Terminal/login 读 /etc/master.passwd
+            // 实际是 /var/jb/etc/master.passwd（data 卷可写）。真实 /etc 在系统只读卷，写不了。
+            // build38.66 错写成 /var/master.passwd（Xina 残留、rh2 会删）→ ENOENT。
+            NSString *passwdPathStr = JBROOT_PATH(@"/etc/master.passwd"); // -> /var/jb/etc/master.passwd
+            const char *passwdPath = passwdPathStr.fileSystemRepresentation;
+
+            struct stat st;
+            if (stat(passwdPath, &st) != 0) {
+                DIAG([NSString stringWithFormat:@"ensureRootPassword: jbroot %s missing errno=%d %s", passwdPath, errno, strerror(errno)], YES);
+                return;
+            }
+            DIAG([NSString stringWithFormat:@"ensureRootPassword: found %s size=%lld", passwdPath, (long long)st.st_size], YES);
 
             int fd = open(passwdPath, O_RDONLY);
             if (fd < 0) {
@@ -1126,6 +1143,12 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
             chown(passwdPath, 0, 0);
 
             DIAG([NSString stringWithFormat:@"ensureRootPassword: root password set to 'alpine' (DES %s), %zu bytes", alpineHash, newLen], NO);
+
+            // 关键：iOS 的 getpwnam/login 读 pwd_mkdb 生成的 spwd.db，不读 master.passwd 本身。
+            // 只改 master.passwd 不重生成 db，新密码对 login/sshd 完全无效（这正是之前"改了也没用"的根因）。
+            NSString *pwdMkdb = JBROOT_PATH(@"/usr/sbin/pwd_mkdb");
+            int mkdbRc = [self execTrustedWithTimeout:15.0 binary:pwdMkdb arguments:@[@"-p", passwdPathStr]];
+            DIAG([NSString stringWithFormat:@"ensureRootPassword: pwd_mkdb rc=%d", mkdbRc], NO);
         }];
     }];
 }
