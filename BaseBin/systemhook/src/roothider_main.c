@@ -153,10 +153,17 @@ void redirect_paths(const char* rootdir)
 
         //for jailbroken binaries
         redirect_env_paths(rootdir);
-		
-		if(_CFCanChangeEUIDs()) {
-			loadPathHook();
-		}
+
+		// build38.56: iOS 17.6+/18 修复——去掉 _CFCanChangeEUIDs() 门控强制加载 pathhook。
+		// 原代码（rh2 设计）：pathhook 只在 _CFCanChangeEUIDs() 返回 true 时加载，
+		// 即调用进程能改 euid（uid==0 或 uid!=euid）。rh2 用 persona override 让
+		// Sileo 等 jbroot app 启动时是 root → uid==0 → canChange=true → pathhook 加载。
+		// iOS 17.6+ kernel 封禁任何 persona override → Sileo 永远 mobile → canChange=false
+		// → pathhook 不加载 → Sileo 写真实根 /var/lib/apt/sileolists（只读 rootfs）→ 失败。
+		// 用户 2026-08-11 19:15 实测 iOS 18.0：Sileo 报"存储到 sileolists 权限"，确认根因。
+		// 修复：强制所有 jbroot app（上方 realjbroot 检查已保证）加载 pathhook。
+		// pathhook（roothidehooks.dylib）内部只重定向 jbroot 路径，非 jbroot app 不受影响。
+		loadPathHook();
     
         pid_t ppid = __getppid();
         ASSERT(ppid > 0);
