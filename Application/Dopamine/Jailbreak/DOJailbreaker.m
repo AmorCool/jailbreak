@@ -467,9 +467,13 @@ void *boomerang_server(struct boomerang_info *info)
     // build38.39: 恢复 fakelib 挂载。roothide 2.x 在 createFakeLib 后挂载 fakelib，
     // 3.x 移植时把它注释掉"对齐 rh2"，但实际 spawn_hook.c 的懒加载挂载在 launchd 早期
     // 不可靠（iOS 18 上多次实测 systemhook 不注入）。这里主动挂载，reboot 前即生效。
+    // build38.45c: 改为非致命——setFakelibMounted 通过 jbserver→jbctl 调 bindfs 挂载，
+    // 若 jbserver 未就绪或挂载失败直接 return error 会阻断整个越狱流程（createFakeLib
+    // → finalize 不执行 → sileolists 不修 + diag 不写），而 rh2 没有这步主动挂载，
+    // 纯靠懒加载也能工作。主动挂载成功更好，失败则 fallback 到懒加载，不中断流程。
     r = [[DOEnvironmentManager sharedManager] setFakelibMounted:YES];
     if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Mounting fakelib failed with error: %d", r]}];
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"fakelib mount returned %d, falling back to lazy mount", r] debug:YES];
     }
 
     // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
@@ -718,6 +722,14 @@ void *boomerang_server(struct boomerang_info *info)
         return;
     }
     
+    // build38.45: 越狱流程内最早的 sileolists/apt 权限修复点。
+    // createFakeLib（含 setFakelibMounted:YES）可能因 fakelib bindfs 挂载失败而 return
+    // error → 后续 finalizeBootstrap 不执行 → ensureSileoAndAptDirectories 不跑 →
+    // Sileo 永久报"没有权限存储到 sileolists"。这里在 createFakeLib 之前执行（此时已
+    // root+jbroot 解压+launchdhook 注入），不依赖 createFakeLib 成功。finalizeBootstrap
+    // 内 + DOMainViewController viewDidLoad 也有兜底调用（幂等）。
+    [[DOEnvironmentManager sharedManager] ensureSileoAndAptDirectories];
+    
 /*
     // roothide merge: 对齐 rh2，不再 bind mount 保护 preboot 目录
     // （3.x 的 preboot protection + fakelib 挂载是 Roothide Manager "Unknown Bindfs Mount(s)" 告警来源，
@@ -739,14 +751,6 @@ void *boomerang_server(struct boomerang_info *info)
         [self cleanUpPostExploitation];
         return;
     }
-    
-    // build38.45: 提前修复 sileolists/apt 目录权限，不依赖 finalizeBootstrap 跑完。
-    // PPL bypass 阶段内核 panic 会打断越狱流程（实测 panic-full-*.ips），finalize 从未执行
-    // → ensureSileoAndAptDirectories（chown mobile:mobile）从未跑 → Sileo 装/卸插件
-    // 报"没有权限存储到 sileolists 文件夹"。这里在 createFakeLib 后、finalize 前
-    // 提前执行（此时已 root + jbroot 已解压 + launchdhook 已注入），保证即使后面
-    // 任何一步中断，sileolists 权限也已经修好。finalizeBootstrap 内的调用保留（幂等）。
-    [[DOEnvironmentManager sharedManager] ensureSileoAndAptDirectories];
     
     // Unsandbox iconservicesagent so that app icons can work
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/killall"), "-9", "iconservicesagent", NULL);
