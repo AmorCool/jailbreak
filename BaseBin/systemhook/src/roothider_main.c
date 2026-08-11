@@ -541,6 +541,45 @@ void roothide_init_with_executable(const char* executable)
 		loadPathHook(); //requre jit
 	}
 
+	// build38.59: 调用 roothidehooks.dylib 里的进程特定 Init（lsdInit/cfprefsdInit/
+	// sbInit/installdInit），让 rh2 的隐藏机制（URL scheme / LaunchServices / UTI /
+	// SpringBoard 启动过滤）真正生效。
+	//
+	// 之前 38.56 仅调了 pathhook() 和 palera1n()，roothidehooks.dylib 里实现的
+	// _LSCanOpenURLManager/canOpenURL/_LSDOpenClient/_LSDReadClient 等 Logos hook
+	// **从未被注册**。结果：黑名单 app 仍能 query jbroot URL scheme、仍能在
+	// LaunchServices 里看到 jbroot app 的 UTI/URL scheme 注册——原版 rh2 在这些
+	// 进程注入这些 hook 才隐藏得住，用户实测"原版 roothide 不会"就是因为这些 hook
+	// 没装载。
+	//
+	// 关键：这些 Init 必须在 redirect_paths 之外调，且必须在目标进程执行主循环前
+	// 完成（否则 hook 漏掉早期 XPC 请求）。roothide_init_with_executable 由 systemhook
+	// 的 dyld hook 在 main() 之前调用，时机正确。
+	{
+		void* rhHooksLib = dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
+		if (rhHooksLib) {
+			// 顺序匹配 roothidehooks/main.x %ctor：installd/cfprefsd/lsd/SpringBoard
+			if (string_has_suffix(executable, "/installd")) {
+				void (*installdInit)(void) = dlsym(rhHooksLib, "installdInit");
+				if (installdInit) installdInit();
+			}
+			else if (string_has_suffix(executable, "/cfprefsd")) {
+				void (*cfprefsdInit)(void) = dlsym(rhHooksLib, "cfprefsdInit");
+				if (cfprefsdInit) cfprefsdInit();
+			}
+			else if (string_has_suffix(executable, "/lsd")) {
+				void (*lsdInit)(void) = dlsym(rhHooksLib, "lsdInit");
+				if (lsdInit) lsdInit();
+			}
+			else if (string_has_suffix(executable, "/SpringBoard")) {
+				void (*sbInit)(void) = dlsym(rhHooksLib, "sbInit");
+				if (sbInit) sbInit();
+			}
+			// pathhook 已在上方 Dopamine 分支调过；palera1n 已在 arm64e 排除分支调过
+			// ——不重复。
+		}
+	}
+
 	dlopen(JBROOT_PATH("/usr/lib/roothidepatch.dylib"), RTLD_NOW); //require jit
 }
 
