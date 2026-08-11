@@ -1094,23 +1094,23 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 把 dpkg / Sileo 相关的现场状态落盘，便于用 AFC（爱思、iMazing 等）
     // 从 /var/mobile/Media/ 直接取出，不必装 Filza 也能定位问题。
     // 追加写入，保留历次越狱记录。
-    // build38.40: 避开 JBROOT_PATH(@"") 的 NSString overload，该重载在 iOS 18 arm64e
-    // 某些运行时会因 path.fileSystemRepresentation 内部访问 NSSubrangeData 而崩溃。
+    // build38.42: 修复 format 串缺参 bug——原格式串有 10 个 %@ 但只传了 9 个参数，
+    // stringWithFormat 读取第 10 个参数时拿到栈上垃圾 → 崩溃（iOS18 上实测闪退）。
+    // 全部改用 %s + jbrootC，10 个占位符 ↔ 10 个参数严格对应。
     const char *jbrootC = get_jbroot() ?: "";
-    NSString *jbroot = [NSString stringWithUTF8String:jbrootC];
     NSString *script = [NSString stringWithFormat:
         @"exec >> /var/mobile/Media/dopamine_dpkg_diag.log 2>&1; "
          "echo \"===== $(date) =====\"; "
-         "echo '--- dpkg journal (updates/) ---'; ls -la '%@/Library/dpkg/updates/'; "
-         "echo '--- dpkg locks ---'; ls -la '%@/Library/dpkg/lock' '%@/Library/dpkg/lock-frontend' 2>&1; "
+         "echo '--- dpkg journal (updates/) ---'; ls -la '%s/Library/dpkg/updates/'; "
+         "echo '--- dpkg locks ---'; ls -la '%s/Library/dpkg/lock' '%s/Library/dpkg/lock-frontend' 2>&1; "
          "echo '--- dpkg processes ---'; ps -A | grep -i dpkg | grep -v grep; "
-         "echo '--- sileolists ---'; ls -ld '%@/var/lib/apt/sileolists' '%@/var/lib/apt/sileolists/operations'; "
-         "echo '--- apt lists ---'; ls -ld '%@/var/lib/apt/lists'; "
-         "echo '--- roothidepatch / DynamicPatches ---'; ls -la '%@/usr/lib/roothidepatch.dylib' '%@/usr/lib/DynamicPatches/' 2>&1; "
-         "echo '--- dpkg --audit ---'; '%@/usr/bin/dpkg' --audit; "
-         "echo '--- not-installed-ok pkgs ---'; '%@/usr/bin/dpkg' -l | grep -v '^ii' | head -40; "
+         "echo '--- sileolists ---'; ls -ld '%s/var/lib/apt/sileolists' '%s/var/lib/apt/sileolists/operations'; "
+         "echo '--- apt lists ---'; ls -ld '%s/var/lib/apt/lists'; "
+         "echo '--- roothidepatch / DynamicPatches ---'; ls -la '%s/usr/lib/roothidepatch.dylib' '%s/usr/lib/DynamicPatches/' 2>&1; "
+         "echo '--- dpkg --audit ---'; '%s/usr/bin/dpkg' --audit; "
+         "echo '--- not-installed-ok pkgs ---'; '%s/usr/bin/dpkg' -l | grep -v '^ii' | head -40; "
          "echo; ",
-        jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot, jbroot];
+        jbrootC, jbrootC, jbrootC, jbrootC, jbrootC, jbrootC, jbrootC, jbrootC, jbrootC, jbrootC];
     exec_cmd_trusted(JBROOT_PATH("/bin/sh"), "-c", script.fileSystemRepresentation, NULL);
     // 交给 mobile，AFC 才能正常读取
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/chown"), "mobile:mobile", "/var/mobile/Media/dopamine_dpkg_diag.log", NULL);
