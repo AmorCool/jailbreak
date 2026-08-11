@@ -5,6 +5,7 @@
 #include "crashreporter.h"
 #include "update.h"
 #include <libjailbreak/util.h>
+#include <libjailbreak/roothider.h>
 #include <substrate.h>
 #include <mach-o/dyld.h>
 #include <sys/param.h>
@@ -244,44 +245,65 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 
 	// build38.43: 恢复黑名单判定（RootHide Manager 屏蔽）。
 	// 38.34 回退 prehook 后 isBlacklistedPath 从未被调用 → 屏蔽完全失效。
-	// 与 rh2 prehook 一致：黑名单 app 不注入 systemhook（原样 spawn），
-	// 同时记录到 blacklist 进程表供 xpc_hook 隐藏进程/job。
-	// build38.45: 补上 rh2 prehook 里的两条 EPERM 拦截（38.43 遗漏）：
-	//   a) 屏蔽 app 的 PlugIns/Extensions/.appex 子进程 → 直接拒绝，否则扩展进程
-	//      仍会被注入/以旧缓存启动 → 屏蔽 app 的扩展残留越狱痕迹；
-	//   b) 屏蔽 app 的 ActivePrewarm / DYLD_USE_CLOSURES 预热进程 → 直接拒绝，
-	//      否则系统用 prewarm 缓存启动 app（缓存里带着注入配置）→ app 启动即闪退
-	//      （用户实测：开启黑名单后目标 app 闪退，先关闭屏蔽打开 app 再开启才正常，
-	//       正是 prewarm 缓存未清除导致）。
+	//
+	// build38.46: 对标 rh2 roothider.m:378-432 重写黑名单 spawn 路径。
+	//   关键差异：
+	//   - EPERM 在 rh2 有双重门控 dyld_patch_enabled() && iOS15Arm64e——iOS16+ 上
+	//     两个条件均为 false → EPERM 从不触发。38.45 误把 EPERM 写成无条件，
+	//     导致 iOS18 上屏蔽 app 的扩展/预热进程被直接拒绝（launchd 杀父进程 → 闪退；
+	//     用户实测"开黑名单后打开 app 闪退，先关再开才行"）。
+	//   - 非 EPERM 普通路径：rh2 用 __posix_spawn_orig_wrapper（绕过注入，纯原始
+	//     spawn）+ 记录 blacklist 进程表；choicyBlocked 分支与我们无关（rh2
+	//     choicyBlocked 仅 iOS15 arm64e + _SafeMode 环境，我们的 Choicy 不走 launchd）。
 	bool roothideBlacklisted = isBlacklistedPath(path);
 	if (roothideBlacklisted)
 	{
+		int ret;
 		bootlog("blacklisted app %s", path);
 
-		// rh2 prehook 语义：屏蔽 app 的扩展/预热进程直接拒绝（EPERM 让 launchd 重试/跳过）
-		if (strstr(path, "/PlugIns/") || strstr(path, "/Extensions/") || strstr(path, ".appex/")) {
-			bootlog("prevent blacklisted app's extension from running: %s", path);
-			return EPERM;
+		// 对标 rh2 roothider.m:385-391：EPERM 仅在 dyld_patch_enabled && iOS15Arm64e 生效。
+		// dyld_patch 在 rh2 默认关闭（fallback:NO），iOS16+ __builtin_available(iOS 16.0) 为真
+		// → iOS15Arm64e 为假。两条门控互斥 → iOS16+/iOS18 上 EPERM 死代码。
+		// 38.45 写成了无条件 return EPERM → 屏蔽 app 的扩展/预热进程全被拒绝 → app 闪退。
+		bool iOS15Arm64e = false;
+#ifdef __arm64e__
+		if (!__builtin_available(iOS 16.0, *)) {
+			iOS15Arm64e = true;
 		}
-		if (envbuf_getenv(envp, "ActivePrewarm") || envbuf_getenv(envp, "DYLD_USE_CLOSURES")) {
-			bootlog("prevent blacklisted app from prewarming: %s", path);
-			return EPERM;
-		}
+#endif
 
-		char **envc = envbuf_mutcopy((const char **)envp);
-		envbuf_unsetenv(&envc, "_SafeMode");
-		envbuf_unsetenv(&envc, "_MSSafeMode");
-		volatile pid_t* blacklistedPidp = allocBlacklistProcessId();
-		int ret = __posix_spawn_orig_wrapper(blacklistedPidp, path, desc, argv, envc);
-		pid_t bpid = *blacklistedPidp;
-		if (pid) *pid = bpid;
-		commitBlacklistProcessId(blacklistedPidp);
-		envbuf_free(envc);
-		if (ret == 0 && bpid > 0) {
-			short flags = 0;
-			if (desc && desc->attrp) posix_spawnattr_getflags(&desc->attrp, &flags);
-			if ((flags & POSIX_SPAWN_START_SUSPENDED) != 0) {
-				platform_set_process_debugged(bpid, false);
+		if (dyld_patch_enabled() && iOS15Arm64e
+			&& (strstr(path, "/PlugIns/") || strstr(path, "/Extensions/") || strstr(path, ".appex/"))) {
+			bootlog("prevent blacklisted app's extension from running: %s", path);
+			ret = EPERM;
+		}
+		else if (dyld_patch_enabled() && iOS15Arm64e
+			&& (envbuf_getenv(envp, "ActivePrewarm") || envbuf_getenv(envp, "DYLD_USE_CLOSURES"))) {
+			bootlog("prevent blacklisted app from prewarming: %s", path);
+			ret = EPERM;
+		}
+		else
+		{
+			// 对标 rh2 roothider.m:393-432：普通黑名单路径——原样 spawn，不注入 systemhook，
+			// 记录 blacklist 进程表供 xpc_hook 隐藏进程/job。
+			char **envc = envbuf_mutcopy((const char **)envp);
+			envbuf_unsetenv(&envc, "_SafeMode");
+			envbuf_unsetenv(&envc, "_MSSafeMode");
+
+			volatile pid_t* blacklistedPidp = allocBlacklistProcessId();
+			ret = __posix_spawn_orig_wrapper(blacklistedPidp, path, desc, argv, envc);
+
+			pid_t bpid = *blacklistedPidp;
+			if (pid) *pid = bpid;
+			commitBlacklistProcessId(blacklistedPidp);
+			envbuf_free(envc);
+
+			if (ret == 0 && bpid > 0) {
+				short flags = 0;
+				if (desc && desc->attrp) posix_spawnattr_getflags(&desc->attrp, &flags);
+				if ((flags & POSIX_SPAWN_START_SUSPENDED) != 0) {
+					platform_set_process_debugged(bpid, false);
+				}
 			}
 		}
 		return ret;

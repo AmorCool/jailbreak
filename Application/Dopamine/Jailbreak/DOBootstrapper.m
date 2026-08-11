@@ -1241,7 +1241,6 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // status journal，若后面还有 dpkg -i，又会留下新的 journal，Sileo 照样弹“dpkg 被中断”。
     [[DOUIManager sharedInstance] sendLog:@"Reconciling dpkg database" debug:NO];
     [self ensureDpkgConsistent];
-    [self writeDpkgDiagnostics];
 
     return nil;
 }

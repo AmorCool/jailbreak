@@ -442,6 +442,11 @@ void *boomerang_server(struct boomerang_info *info)
 
 - (NSError *)createFakeLib
 {
+    // build38.46: 对标 rh2 DOJailbreaker.m:624-655。
+    // rh2 做：basebin_generate → dyld trustcache → exec_set_patch → setenv。
+    // 没有 setFakelibMounted（bindfs 由 spawn_hook.c 懒加载）。
+    // 38.39-38.45c 加入的 setFakelibMounted:YES 在 jbserver 未就绪时失败
+    // → createFakeLib return error → 越狱流程中断 → finalize 不执行。
     int r = basebin_generate(false);
     if (r != 0) {
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d", r]}];
@@ -464,31 +469,11 @@ void *boomerang_server(struct boomerang_info *info)
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : @"Failed to build dyld trustcache"}];
     }
     
-    // build38.39: 恢复 fakelib 挂载。roothide 2.x 在 createFakeLib 后挂载 fakelib，
-    // 3.x 移植时把它注释掉"对齐 rh2"，但实际 spawn_hook.c 的懒加载挂载在 launchd 早期
-    // 不可靠（iOS 18 上多次实测 systemhook 不注入）。这里主动挂载，reboot 前即生效。
-    // build38.45c: 改为非致命——setFakelibMounted 通过 jbserver→jbctl 调 bindfs 挂载，
-    // 若 jbserver 未就绪或挂载失败直接 return error 会阻断整个越狱流程（createFakeLib
-    // → finalize 不执行 → sileolists 不修 + diag 不写），而 rh2 没有这步主动挂载，
-    // 纯靠懒加载也能工作。主动挂载成功更好，失败则 fallback 到懒加载，不中断流程。
-    r = [[DOEnvironmentManager sharedManager] setFakelibMounted:YES];
-    if (r != 0) {
-        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"fakelib mount returned %d, falling back to lazy mount", r] debug:YES];
-    }
-
     // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
-    // roothide merge: 对齐 rh2 RootHide Stage —— DYLD_INSERT_LIBRARIES 用 jbroot 内路径
-    // （rootless 的 /usr/lib/systemhook.dylib 固定路径在 roothide 随机 jbroot 下不存在）
     setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
-/*************************** roothide specific *******************/
-    exec_set_patch(true); /* launchdhook injected and dyld patched,
-    now we can enable dyld patching for new process */
-
-    // don't use dyld-in-cache due to dyldhooks
+    exec_set_patch(true);
     setenv("DYLD_IN_CACHE", "0", 1);
-    // don't load tweak during jailbreaking
     setenv("DISABLE_TWEAKS", "1", 1);
-/******************************** roothide specific *************************/
     return nil;
 }
 
