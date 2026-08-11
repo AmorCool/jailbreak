@@ -993,6 +993,66 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 }
 
 
+// build38.65: 设 root 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
+// iOS 18 默认 /var/master.passwd 把 root 密码字段写成 "*"（lock），导致：
+//   - Terminal app 本地 console "login: root" → Login incorrect
+//   - sshd 接受密码登录时 root 也进不去
+// Dopamine 上游 (5bee173) 从未设过 root 密码，导致 roothide 3.x 用户没有可用 root shell。
+// 行业标准（checkra1n/palera1n/Dopamine 2.x 都用这个 hash）：DES crypt "alpine"。
+// 幂等：已设过（密码字段不是 "*"/"!"/""/空）就跳过，不覆盖用户自定义密码。
+- (void)ensureRootPassword
+{
+    [[DOUIManager sharedInstance] sendLog:@"Setting root password (alpine)" debug:NO];
+
+    const char *alpineHash = "9BalK0iTb6cog";
+
+    NSString *scriptPath = JBROOT_PATH(@"/tmp/.do_set_root_passwd.sh");
+    NSString *scriptContent = [NSString stringWithFormat:
+        @"#!/bin/sh\n"
+        @"\n"
+        @"PASSWD=/var/master.passwd\n"
+        @"if [ ! -f \"$PASSWD\" ]; then\n"
+        @"  echo \"NO_MASTERPASSWD\"\n"
+        @"  exit 0\n"
+        @"fi\n"
+        @"\n"
+        @"CUR=$(awk -F: '$1==\"root\"{print $2; exit}' \"$PASSWD\")\n"
+        @"echo \"ROOT_CUR=[$CUR]\"\n"
+        @"case \"$CUR\" in\n"
+        @"  ''|'*'|'!'|'*NP'|'*LK*')\n"
+        @"    sed 's|^root:[*!]\\?:|root:%s:|' \"$PASSWD\" > \"$PASSWD.tmp\"\n"
+        @"    if [ -s \"$PASSWD.tmp\" ]; then\n"
+        @"      cp \"$PASSWD.tmp\" \"$PASSWD\"\n"
+        @"      rm -f \"$PASSWD.tmp\"\n"
+        @"      chmod 0644 \"$PASSWD\"\n"
+        @"      echo \"SET_ALPINE_OK\"\n"
+        @"    else\n"
+        @"      echo \"SET_ALPINE_FAILED\"\n"
+        @"    fi\n"
+        @"    ;;\n"
+        @"  *)\n"
+        @"    echo \"ROOT_HAS_PASSWORD_NO_CHANGE\"\n"
+        @"    ;;\n"
+        @"esac\n", alpineHash];
+
+    NSError *err = nil;
+    if (![scriptContent writeToFile:scriptPath atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: script write failed: %@", err.localizedDescription] debug:YES];
+        return;
+    }
+    chmod(scriptPath.fileSystemRepresentation, 0755);
+
+    int r = [self execTrustedWithTimeout:10.0 binary:@"/bin/sh" arguments:@[scriptPath]];
+    unlink(scriptPath.fileSystemRepresentation);
+
+    if (r != 0) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: exec rc=%d", r] debug:YES];
+    } else {
+        [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: done" debug:NO];
+    }
+}
+
+
 - (void)ensureSileoAndAptDirectories
 {
     // Sileo 报“文件夹 'xxx-_Packages' 不存在”（实测 roothide.github.io-_Packages），
@@ -1194,6 +1254,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
+    // build38.65: 设 root 密码 = alpine。必须在 trust 链里跑，且不需要 dpkg。
+    // 必须在 ensureSileoAndAptDirectories 之前：iOS 18 root 密码被 lock → Terminal
+    // 本地 console / ssh root 都进不去 → 用户没有任何 root shell 调试链路。
+    [self ensureRootPassword];
     // build38.36: 装新包前先清历史 dpkg journal/半状态——用户设备历史上 dpkg 中断过，
     // 若 updates/ 残留 journal，后续 dpkg -i 会先 replay 旧事务（可能卡住/报错）。
     // 先 --configure -a 清干净，再装三件套，最后收尾再清一次。
