@@ -993,63 +993,115 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 }
 
 
-// build38.65: 设 root 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
-// iOS 18 默认 /var/master.passwd 把 root 密码字段写成 "*"（lock），导致：
+// build38.66: 设 root 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
+// iOS 18 默认 /var/master.passwd 把 root 密码字段写成 "*" (lock)，导致：
 //   - Terminal app 本地 console "login: root" → Login incorrect
 //   - sshd 接受密码登录时 root 也进不去
 // Dopamine 上游 (5bee173) 从未设过 root 密码，导致 roothide 3.x 用户没有可用 root shell。
 // 行业标准（checkra1n/palera1n/Dopamine 2.x 都用这个 hash）：DES crypt "alpine"。
 // 幂等：已设过（密码字段不是 "*"/"!"/""/空）就跳过，不覆盖用户自定义密码。
+//
+// build38.66 关键修：38.65 用 exec_cmd_trusted 跑 mobile uid 子进程，写 root:wheel 0600 的
+// master.passwd 必 EACCES → 静默失败。Dopamine app 进程调 runAsRoot 把 uid/gid 临时
+// 改成 0，再 runUnsandboxed 移除 sandbox，**在进程上下文直接 C 系统调用**读/写文件。
 - (void)ensureRootPassword
 {
     [[DOUIManager sharedInstance] sendLog:@"Setting root password (alpine)" debug:NO];
 
-    const char *alpineHash = "9BalK0iTb6cog";
+    DOEnvironmentManager *env = [DOEnvironmentManager sharedManager];
 
-    NSString *scriptPath = JBROOT_PATH(@"/tmp/.do_set_root_passwd.sh");
-    NSString *scriptContent = [NSString stringWithFormat:
-        @"#!/bin/sh\n"
-        @"\n"
-        @"PASSWD=/var/master.passwd\n"
-        @"if [ ! -f \"$PASSWD\" ]; then\n"
-        @"  echo \"NO_MASTERPASSWD\"\n"
-        @"  exit 0\n"
-        @"fi\n"
-        @"\n"
-        @"CUR=$(awk -F: '$1==\"root\"{print $2; exit}' \"$PASSWD\")\n"
-        @"echo \"ROOT_CUR=[$CUR]\"\n"
-        @"case \"$CUR\" in\n"
-        @"  ''|'*'|'!'|'*NP'|'*LK*')\n"
-        @"    sed 's|^root:[*!]\\?:|root:%s:|' \"$PASSWD\" > \"$PASSWD.tmp\"\n"
-        @"    if [ -s \"$PASSWD.tmp\" ]; then\n"
-        @"      cp \"$PASSWD.tmp\" \"$PASSWD\"\n"
-        @"      rm -f \"$PASSWD.tmp\"\n"
-        @"      chmod 0644 \"$PASSWD\"\n"
-        @"      echo \"SET_ALPINE_OK\"\n"
-        @"    else\n"
-        @"      echo \"SET_ALPINE_FAILED\"\n"
-        @"    fi\n"
-        @"    ;;\n"
-        @"  *)\n"
-        @"    echo \"ROOT_HAS_PASSWORD_NO_CHANGE\"\n"
-        @"    ;;\n"
-        @"esac\n", alpineHash];
+    [env runAsRoot:^{
+        [env runUnsandboxed:^{
+            const char *passwdPath = "/var/master.passwd";
 
-    NSError *err = nil;
-    if (![scriptContent writeToFile:scriptPath atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
-        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: script write failed: %@", err.localizedDescription] debug:YES];
-        return;
-    }
-    chmod(scriptPath.fileSystemRepresentation, 0755);
+            int fd = open(passwdPath, O_RDONLY);
+            if (fd < 0) {
+                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: open read failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                return;
+            }
+            char buf[16384];
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: read returned 0 or error" debug:YES];
+                return;
+            }
+            buf[n] = '\0';
 
-    int r = [self execTrustedWithTimeout:10.0 binary:@"/bin/sh" arguments:@[scriptPath]];
-    unlink(scriptPath.fileSystemRepresentation);
+            char *rootLineStart = (buf[0] == 'r' && strncmp(buf, "root:", 5) == 0) ? buf : strstr(buf, "\nroot:");
+            if (!rootLineStart) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: no root line found" debug:YES];
+                return;
+            }
+            if (*rootLineStart == '\n') rootLineStart++;
+            char *colon1 = strchr(rootLineStart, ':');
+            if (!colon1) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: root line malformed" debug:YES];
+                return;
+            }
+            char *colon2 = strchr(colon1 + 1, ':');
+            if (!colon2) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: root line no 2nd colon" debug:YES];
+                return;
+            }
 
-    if (r != 0) {
-        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: exec rc=%d", r] debug:YES];
-    } else {
-        [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: done" debug:NO];
-    }
+            size_t pwdLen = colon2 - (colon1 + 1);
+            char curPwd[64] = {0};
+            memcpy(curPwd, colon1 + 1, pwdLen > 63 ? 63 : pwdLen);
+
+            NSString *cur = [NSString stringWithUTF8String:curPwd];
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: root pwd field=[%@] len=%zu", cur ?: @"?", pwdLen] debug:YES];
+
+            // 跳过已是有效密码（hash 非空且不是 * ! NP LK）
+            if (cur.length > 0 && ![cur isEqualToString:@"*"] && ![cur isEqualToString:@"!"] &&
+                ![cur hasPrefix:@"*NP"] && ![cur hasPrefix:@"*LK"]) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: already has password, skip" debug:NO];
+                return;
+            }
+
+            const char *alpineHash = "9BalK0iTb6cog";
+            size_t hashLen = strlen(alpineHash);
+
+            size_t headLen = colon1 + 1 - buf;
+            size_t tailLen = n - (colon2 - buf);
+
+            char outBuf[16384];
+            if (headLen + hashLen + tailLen >= sizeof(outBuf)) {
+                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: buffer too small" debug:YES];
+                return;
+            }
+            memcpy(outBuf, buf, headLen);
+            memcpy(outBuf + headLen, alpineHash, hashLen);
+            memcpy(outBuf + headLen + hashLen, colon2, tailLen);
+            size_t newLen = headLen + hashLen + tailLen;
+
+            // 写 .tmp 再 rename（atomic），避免中途崩溃破坏文件
+            char tmpPath[64];
+            snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", passwdPath);
+
+            int wfd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (wfd < 0) {
+                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: open tmp failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                return;
+            }
+            ssize_t wn = write(wfd, outBuf, newLen);
+            close(wfd);
+            if (wn != (ssize_t)newLen) {
+                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: write failed rc=%zd errno=%d %s", wn, errno, strerror(errno)] debug:YES];
+                unlink(tmpPath);
+                return;
+            }
+            if (rename(tmpPath, passwdPath) != 0) {
+                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: rename failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                unlink(tmpPath);
+                return;
+            }
+            chmod(passwdPath, 0644);
+            chown(passwdPath, 0, 0);
+
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: root password set to 'alpine' (DES %s), %zu bytes", alpineHash, newLen] debug:NO];
+        }];
+    }];
 }
 
 
