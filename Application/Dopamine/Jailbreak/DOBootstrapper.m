@@ -1004,9 +1004,35 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 // build38.66 关键修：38.65 用 exec_cmd_trusted 跑 mobile uid 子进程，写 root:wheel 0600 的
 // master.passwd 必 EACCES → 静默失败。Dopamine app 进程调 runAsRoot 把 uid/gid 临时
 // 改成 0，再 runUnsandboxed 移除 sandbox，**在进程上下文直接 C 系统调用**读/写文件。
+
+// build38.67: 持久化诊断日志。sendLog 只写内存数组 (_logRecord)，app 被杀/用户空间重启即丢，
+// 用户多次反馈"越狱完重启 app 日志就没了，没法给我看"。这里把关键诊断追加写入
+// /var/mobile/Media/dopamine_rootpw.log（mobile 拥有的媒体目录，AFC/爱思可直接导出），
+// 即使 app 被杀 / 用户空间重启也不影响。用 mobile 进程直接 fopen 写（Dopamine 是
+// TrollStore unsandboxed app，对 /var/mobile/Media 有写权限，无需 root）。
+- (void)appendDiag:(NSString *)line
+{
+    if (!line.length) return;
+    const char *path = "/var/mobile/Media/dopamine_rootpw.log";
+    FILE *f = fopen(path, "ab");
+    if (!f) return;
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    NSString *ts = [fmt stringFromDate:[NSDate date]];
+    fprintf(f, "[%s] %s\n", ts.UTF8String, line.UTF8String);
+    fclose(f);
+    chown(path, 501, 501);
+    chmod(path, 0644);
+}
+
 - (void)ensureRootPassword
 {
-    [[DOUIManager sharedInstance] sendLog:@"Setting root password (alpine)" debug:NO];
+    void (^DIAG)(NSString *, BOOL) = ^(NSString *msg, BOOL dbg){
+        [[DOUIManager sharedInstance] sendLog:msg debug:dbg];
+        [self appendDiag:msg];
+    };
+
+    DIAG(@"Setting root password (alpine)", NO);
 
     DOEnvironmentManager *env = [DOEnvironmentManager sharedManager];
 
@@ -1016,32 +1042,32 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
             int fd = open(passwdPath, O_RDONLY);
             if (fd < 0) {
-                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: open read failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                DIAG([NSString stringWithFormat:@"ensureRootPassword: open read failed errno=%d %s", errno, strerror(errno)], YES);
                 return;
             }
             char buf[16384];
             ssize_t n = read(fd, buf, sizeof(buf) - 1);
             close(fd);
             if (n <= 0) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: read returned 0 or error" debug:YES];
+                DIAG(@"ensureRootPassword: read returned 0 or error", YES);
                 return;
             }
             buf[n] = '\0';
 
             char *rootLineStart = (buf[0] == 'r' && strncmp(buf, "root:", 5) == 0) ? buf : strstr(buf, "\nroot:");
             if (!rootLineStart) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: no root line found" debug:YES];
+                DIAG(@"ensureRootPassword: no root line found", YES);
                 return;
             }
             if (*rootLineStart == '\n') rootLineStart++;
             char *colon1 = strchr(rootLineStart, ':');
             if (!colon1) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: root line malformed" debug:YES];
+                DIAG(@"ensureRootPassword: root line malformed", YES);
                 return;
             }
             char *colon2 = strchr(colon1 + 1, ':');
             if (!colon2) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: root line no 2nd colon" debug:YES];
+                DIAG(@"ensureRootPassword: root line no 2nd colon", YES);
                 return;
             }
 
@@ -1050,12 +1076,12 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
             memcpy(curPwd, colon1 + 1, pwdLen > 63 ? 63 : pwdLen);
 
             NSString *cur = [NSString stringWithUTF8String:curPwd];
-            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: root pwd field=[%@] len=%zu", cur ?: @"?", pwdLen] debug:YES];
+            DIAG([NSString stringWithFormat:@"ensureRootPassword: root pwd field=[%@] len=%zu", cur ?: @"?", pwdLen], YES);
 
             // 跳过已是有效密码（hash 非空且不是 * ! NP LK）
             if (cur.length > 0 && ![cur isEqualToString:@"*"] && ![cur isEqualToString:@"!"] &&
                 ![cur hasPrefix:@"*NP"] && ![cur hasPrefix:@"*LK"]) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: already has password, skip" debug:NO];
+                DIAG(@"ensureRootPassword: already has password, skip", NO);
                 return;
             }
 
@@ -1067,7 +1093,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
             char outBuf[16384];
             if (headLen + hashLen + tailLen >= sizeof(outBuf)) {
-                [[DOUIManager sharedInstance] sendLog:@"ensureRootPassword: buffer too small" debug:YES];
+                DIAG(@"ensureRootPassword: buffer too small", YES);
                 return;
             }
             memcpy(outBuf, buf, headLen);
@@ -1081,25 +1107,25 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
             int wfd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (wfd < 0) {
-                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: open tmp failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                DIAG([NSString stringWithFormat:@"ensureRootPassword: open tmp failed errno=%d %s", errno, strerror(errno)], YES);
                 return;
             }
             ssize_t wn = write(wfd, outBuf, newLen);
             close(wfd);
             if (wn != (ssize_t)newLen) {
-                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: write failed rc=%zd errno=%d %s", wn, errno, strerror(errno)] debug:YES];
+                DIAG([NSString stringWithFormat:@"ensureRootPassword: write failed rc=%zd errno=%d %s", wn, errno, strerror(errno)], YES);
                 unlink(tmpPath);
                 return;
             }
             if (rename(tmpPath, passwdPath) != 0) {
-                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: rename failed errno=%d %s", errno, strerror(errno)] debug:YES];
+                DIAG([NSString stringWithFormat:@"ensureRootPassword: rename failed errno=%d %s", errno, strerror(errno)], YES);
                 unlink(tmpPath);
                 return;
             }
             chmod(passwdPath, 0644);
             chown(passwdPath, 0, 0);
 
-            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureRootPassword: root password set to 'alpine' (DES %s), %zu bytes", alpineHash, newLen] debug:NO];
+            DIAG([NSString stringWithFormat:@"ensureRootPassword: root password set to 'alpine' (DES %s), %zu bytes", alpineHash, newLen], NO);
         }];
     }];
 }
@@ -1303,13 +1329,17 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // libxar1/plutil 等基础工具链。这些必须在越狱环境里补齐，否则任何依赖 firmware 或
     // 这些工具的包（sileo / roothideapp / RootHide Patcher / 任意 tweak）都会装失败。
     [[DOUIManager sharedInstance] sendLog:@"Fixing roothide environment" debug:NO];
+    [self appendDiag:@"===== finalizeBootstrap start ====="];
+    [self appendDiag:@"Fixing roothide environment"];
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
     // build38.65: 设 root 密码 = alpine。必须在 trust 链里跑，且不需要 dpkg。
     // 必须在 ensureSileoAndAptDirectories 之前：iOS 18 root 密码被 lock → Terminal
     // 本地 console / ssh root 都进不去 → 用户没有任何 root shell 调试链路。
+    [self appendDiag:@"ensureRootPassword begin"];
     [self ensureRootPassword];
+    [self appendDiag:@"ensureRootPassword done"];
     // build38.36: 装新包前先清历史 dpkg journal/半状态——用户设备历史上 dpkg 中断过，
     // 若 updates/ 残留 journal，后续 dpkg -i 会先 replay 旧事务（可能卡住/报错）。
     // 先 --configure -a 清干净，再装三件套，最后收尾再清一次。
@@ -1334,23 +1364,33 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     
     if (shouldInstallLibroot || shouldInstallLibkrw || shouldInstallBasebinLink || shouldInstallLaunchctl) {
         [[DOUIManager sharedInstance] sendLog:@"Updating Bundled Packages" debug:NO];
+        [self appendDiag:@"Updating Bundled Packages"];
 
         if (shouldInstallLaunchctl) {
             NSString *launchctlPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"launchctl_1_1.2.0_iphoneos-arm64.deb"];
             int r = [self installPackage:launchctlPath];
-            if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install launchctl: %d\n", r]}];
+            if (r != 0) {
+                [self appendDiag:[NSString stringWithFormat:@"FAILED install launchctl: %d", r]];
+                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install launchctl: %d\n", r]}];
+            }
         }
 
         if (shouldInstallLibroot) {
             NSString *librootPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"libroot.deb"];
             int r = [self installPackage:librootPath];
-            if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install libroot: %d\n", r]}];
+            if (r != 0) {
+                [self appendDiag:[NSString stringWithFormat:@"FAILED install libroot: %d", r]];
+                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install libroot: %d\n", r]}];
+            }
         }
         
         if (shouldInstallLibkrw) {
             NSString *libkrwPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"libkrw-dopamine.deb"];
             int r = [self installPackage:libkrwPath];
-            if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install the libkrw plugin: %d\n", r]}];
+            if (r != 0) {
+                [self appendDiag:[NSString stringWithFormat:@"FAILED install libkrw: %d", r]];
+                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install the libkrw plugin: %d\n", r]}];
+            }
         }
         
         if (shouldInstallBasebinLink) {
@@ -1371,7 +1411,10 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
             
             NSString *basebinLinkPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"basebin-link.deb"];
             int r = [self installPackage:basebinLinkPath];
-            if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install basebin link: %d\n", r]}];
+            if (r != 0) {
+                [self appendDiag:[NSString stringWithFormat:@"FAILED install basebin link: %d", r]];
+                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install basebin link: %d\n", r]}];
+            }
         }
     }
 
@@ -1379,6 +1422,7 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 必须放在所有 installPackage 之后：这里跑的 dpkg --configure -a 会 replay 并清空
     // status journal，若后面还有 dpkg -i，又会留下新的 journal，Sileo 照样弹"dpkg 被中断"。
     [[DOUIManager sharedInstance] sendLog:@"Reconciling dpkg database" debug:NO];
+    [self appendDiag:@"Reconciling dpkg database"];
     [self ensureDpkgConsistent];
 
     // build38.49: 在 finalizeBootstrap 成功结束时生成诊断日志。
@@ -1387,7 +1431,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 日志包含 dpkg journal、locks、sileolists 权限、roothidepatch 状态等关键诊断信息，
     // 越狱后用 AFC（爱思/iMazing）从 /var/mobile/Media/ 直接取出即可定位问题。
     [[DOUIManager sharedInstance] sendLog:@"Writing dpkg diagnostics log" debug:NO];
+    [self appendDiag:@"Writing dpkg diagnostics log"];
     [self writeDpkgDiagnostics];
+    [self appendDiag:@"===== finalizeBootstrap done (return nil) ====="];
 
     return nil;
 }
