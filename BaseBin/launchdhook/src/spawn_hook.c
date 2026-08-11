@@ -298,66 +298,27 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	bool roothideBlacklisted = isBlacklistedPath(path);
 	if (roothideBlacklisted)
 	{
-		int ret;
 		bootlog("blacklisted app %s [spawn_hook]", path);
 
-		// 对标 rh2 roothider.m:385-391：EPERM 仅在 dyld_patch_enabled && iOS15Arm64e 生效。
-		// dyld_patch 在 rh2 默认关闭（fallback:NO），iOS16+ __builtin_available(iOS 16.0) 为真
-		// → iOS15Arm64e 为假。两条门控互斥 → iOS16+/iOS18 上 EPERM 死代码。
-		// 38.45 写成了无条件 return EPERM → 屏蔽 app 的扩展/预热进程全被拒绝 → app 闪退。
-		bool iOS15Arm64e = false;
-#ifdef __arm64e__
-		if (!__builtin_available(iOS 16.0, *)) {
-			iOS15Arm64e = true;
-		}
-#endif
+		// build38.50: 根本性修复屏蔽闪退（日志 launchdhook_boot.log 实测所有黑名单
+		// app spawn 返回 -1，普通 app 同路径 spawn 成功）。
+		// 根因：38.43 恢复黑名单判定后直接 __posix_spawn_orig_wrapper，跳过了
+		// posix_spawn_hook_shared 的信任/jetsam/persona 前置处理 → iOS16+ 上
+		// App Store 二进制 posix_spawn 直接失败（ret=-1）→ 开黑名单即闪退。
+		// 修复：走 posix_spawn_hook_shared（与普通进程共用 spawn 路径），
+		// 仅通过 spawn_config_for_executable 返回 kSpawnConfigTrust 关闭 systemhook 注入。
+		// EPERM 门控（dyld_patch_enabled && iOS15Arm64e）在 iOS16+ 为假，不触发——
+		// 黑名单 app 的扩展/预热进程不再被拒绝，正常启动。
+		char **envc = envbuf_mutcopy((const char **)envp);
+		envbuf_unsetenv(&envc, "_SafeMode");
+		envbuf_unsetenv(&envc, "_MSSafeMode");
 
-		// build38.49: 若 HOOK_DYLIB_PATH 不可访问，说明 fakelib 未挂载或 systemhook 文件缺失。
-		// 此时黑名单进程虽可正常 spawn（不依赖注入），但整个越狱环境可能尚未就绪，
-		// 记录警告以便后续排查。不阻止 spawn——黑名单本身就不需要注入。
-		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
-			bootlog("blacklist WARNING: HOOK_DYLIB_PATH=%s not accessible, injection chain may not be ready",
-				HOOK_DYLIB_PATH ? HOOK_DYLIB_PATH : "(null)");
-		}
-
-		if (dyld_patch_enabled() && iOS15Arm64e
-			&& (strstr(path, "/PlugIns/") || strstr(path, "/Extensions/") || strstr(path, ".appex/"))) {
-			bootlog("prevent blacklisted app's extension from running: %s", path);
-			ret = EPERM;
-		}
-		else if (dyld_patch_enabled() && iOS15Arm64e
-			&& (envbuf_getenv(envp, "ActivePrewarm") || envbuf_getenv(envp, "DYLD_USE_CLOSURES"))) {
-			bootlog("prevent blacklisted app from prewarming: %s", path);
-			ret = EPERM;
-		}
-		else
-		{
-			// 对标 rh2 roothider.m:393-432：普通黑名单路径——原样 spawn，不注入 systemhook，
-			// 记录 blacklist 进程表供 xpc_hook 隐藏进程/job。
-			char **envc = envbuf_mutcopy((const char **)envp);
-			envbuf_unsetenv(&envc, "_SafeMode");
-			envbuf_unsetenv(&envc, "_MSSafeMode");
-
-			volatile pid_t* blacklistedPidp = allocBlacklistProcessId();
-			ret = __posix_spawn_orig_wrapper(blacklistedPidp, path, desc, argv, envc);
-
-			pid_t bpid = *blacklistedPidp;
-			if (pid) *pid = bpid;
-			commitBlacklistProcessId(blacklistedPidp);
-			envbuf_free(envc);
-
-			// build38.49: 只在进程确实 suspended 时才调用 debugged（避免竞态）。
-			if (ret == 0 && bpid > 0) {
-				short flags = 0;
-				if (desc && desc->attrp) posix_spawnattr_getflags(&desc->attrp, &flags);
-				if ((flags & POSIX_SPAWN_START_SUSPENDED) != 0) {
-					platform_set_process_debugged(bpid, false);
-				}
-				bootlog("blacklisted app spawned OK: %s -> pid=%d", path, bpid);
-			} else if (ret != 0) {
-				bootlog("blacklisted app SPAWN FAILED: %s -> errno=%d (%s)", path, ret, strerror(ret));
-			}
-		}
+		errno = 0;
+		int ret = posix_spawn_hook_shared(pidp, path, desc, argv, envc,
+			__posix_spawn_orig_wrapper, roothide_launchd_trust_executable,
+			platform_set_process_debugged, jbsetting(jetsamMultiplier));
+		bootlog("blacklisted app %s -> posix_spawn_hook_shared ret=%d errno=%d (%s)", path, ret, errno, strerror(errno));
+		envbuf_free(envc);
 		return ret;
 	}
 
