@@ -27,6 +27,7 @@ extern int systemwide_trust_file_by_path(const char *path);
 extern int platform_set_process_debugged(uint64_t pid, bool fullyDebugged);
 extern int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
 extern int __posix_spawn_orig_wrapper(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);
+extern void ensure_fakelib_mounted(void);
 
 //from systemhook/roothide_common.c
 int __sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, const void *newp, size_t newlen);
@@ -182,6 +183,14 @@ void roothide_launchd_postinit(bool firstLoad)
 
 		//new "real path"
 		asprintf(&HOOK_DYLIB_PATH, "/usr/lib/systemhook-%016llX.dylib", jbinfo(jbrand));
+
+		// build38.39: 创建完 fakelib 符号链接后立即主动挂载 fakelib。
+		// 38.37/38.38 依赖 spawn_hook.c 的 ensure_fakelib_mounted 在第一次 spawn 时懒加载挂载；
+		// 但 launchd 早期第一次 spawn 可能因 jbserver 未就绪或执行顺序问题导致挂载失败/延迟，
+		// 结果后续进程 access(HOOK_DYLIB_PATH) 失败、systemhook 不注入 → Sileo spawnAsRoot 提权失败、
+		// sileolists 建不出。这里在 postinit 里显式挂载一次（幂等，已挂载则跳过）。
+		ensure_fakelib_mounted();
+		JBLogError("roothide: HOOK_DYLIB_PATH=%s, fakelib mount attempted.", HOOK_DYLIB_PATH);
 	}
 
 	if (__builtin_available(iOS 16.0, *))

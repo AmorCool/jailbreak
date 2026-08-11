@@ -464,16 +464,14 @@ void *boomerang_server(struct boomerang_info *info)
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : @"Failed to build dyld trustcache"}];
     }
     
-/*
-    // roothide merge: 对齐 rh2 RootHide Stage —— 不再 bindfs 挂载 fakelib 到 /usr/lib
-    // （rootless 的隐藏机制；roothide 由 dyldhook 的 @loader_path/.jbroot 解析替代，
-    //  挂载会产生 Roothide Manager "Unknown Bindfs Mount(s)" 告警）
+    // build38.39: 恢复 fakelib 挂载。roothide 2.x 在 createFakeLib 后挂载 fakelib，
+    // 3.x 移植时把它注释掉"对齐 rh2"，但实际 spawn_hook.c 的懒加载挂载在 launchd 早期
+    // 不可靠（iOS 18 上多次实测 systemhook 不注入）。这里主动挂载，reboot 前即生效。
     r = [[DOEnvironmentManager sharedManager] setFakelibMounted:YES];
     if (r != 0) {
         return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Mounting fakelib failed with error: %d", r]}];
     }
-    fake_mount();
-*/
+
     // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
     // roothide merge: 对齐 rh2 RootHide Stage —— DYLD_INSERT_LIBRARIES 用 jbroot 内路径
     // （rootless 的 /usr/lib/systemhook.dylib 固定路径在 roothide 随机 jbroot 下不存在）
