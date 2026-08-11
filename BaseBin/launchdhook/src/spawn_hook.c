@@ -100,6 +100,31 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 					   char *const argv[restrict],
 					   char *const envp[restrict])
 {
+	// build38.53: 让 Sileo 主进程以 root 运行（用户要求 2026-08-11）
+	// 原因：Sileo(mobile) 装卸插件需调 dpkg/apt 写 /Library/dpkg（root 才有权限）；
+	// 原本依赖 Sileo 自身的 spawnAsRoot(persona=99 OVERRIDE) 链——iOS17.6+ persona 被封，
+	// 需 systemhook 注入 + launchdhook 的 JBS_SYSTEMWIDE_PERSONA_FIX 改 ucred 链，任一环断
+	// 则 dpkg 以 mobile 身份跑，写 /Library/dpkg 报无权限。用户在 iOS16.3.1 (< 17.6)，
+	// persona override 不被封禁，直接 set persona uid=0 OVERRIDE 让 launchd 以 root spawn
+	// Sileo 即可绕开整条 spawnAsRoot 链——Sileo 进程本身是 root，任意写文件 + 调 dpkg。
+	// systemhook 仍注入（普通分支），让 Sileo 能调 jbclient 维持 jbroot 环境。
+	// iOS17.6+ 跳过（persona 封禁无效）。
+	if (path && desc && desc->attrp
+		&& string_has_suffix(path, "/Sileo.app/Sileo")
+		&& !__builtin_available(iOS 17.6, *)) {
+		posix_spawnattr_t attr = desc->attrp;
+		posix_spawnattr_set_persona_np(attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+		struct _posix_spawn_persona_info **pinfo_p =
+			(struct _posix_spawn_persona_info **)((uint8_t *)attr + POSIX_SPAWNATTR_OFF_PERSONA);
+		if (pinfo_p && *pinfo_p) {
+			(*pinfo_p)->pspi_uid = 0;
+			(*pinfo_p)->pspi_gid = 0;
+			bootlog("roothide: Sileo set persona uid=0 OVERRIDE (root spawn bypass spawnAsRoot chain)");
+		} else {
+			bootlog("roothide: Sileo setpersona_np ok but pinfo_p=%p *pinfo_p=%p (persona_info may be lazily allocated by launchd)", pinfo_p, pinfo_p ? *pinfo_p : NULL);
+		}
+	}
+
 	if (path) {
 		// build38.27: 38.22 的 ensure_jbroot_symlink 加在 roothide_launchd___posix_spawn_prehook
 		// （roothider.m）里，但该 prehook 从未被任何地方注册/调用（死代码），导致
