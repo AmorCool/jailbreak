@@ -126,6 +126,11 @@ jobs:
           # Dopamine bootstrap 装 libkrw-dopamine 失败，dpkg status 留下
           # "Depends: libkrw0-plugin but it is not installable"，后续每次 Sileo 更新/卸载
           # 都报错（构建产物 .tipa 内缺 deb）。
+          #
+          # Provider deb 依赖 BaseBin 子项目（ChOma 头文件等）先产出 BaseBin/.include。
+          # 完整 BaseBin build 耗时数分钟，所以只跑依赖链：先 libjailbreak 触发 .include，
+          # 再 build 三个 Provider 包。
+          gmake -C BaseBin libjailbreak
           gmake -C Packages/libkrw-provider package
           gmake -C Packages/libroot package
           gmake -C Packages/basebin-link package
