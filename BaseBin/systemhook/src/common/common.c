@@ -154,18 +154,6 @@ bool uninject(const char *str) {
 // (roothide 2.x keeps this symbol public)
 kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
 {
-	// roothide 黑名单（RootHide Manager 设置）：信任二进制但不注入 systemhook。
-	// 注入 systemhook 会暴露越狱环境（与"屏蔽"语义相反）；且 38.43 恢复黑名单判定后
-	// 直接 __posix_spawn_orig_wrapper 跳过了 posix_spawn_hook_shared 的信任/前置处理，
-	// 导致 iOS16+ 上 posix_spawn 返回 -1（日志 launchdhook_boot.log 实测所有黑名单 app
-	// spawn 均失败，普通 app 同路径成功）→ 开黑名单即闪退。
-	// 这里返回 kSpawnConfigTrust（不含 kSpawnConfigInject），让 spawn_exec_hook_common
-	// 走信任路径但不注入 systemhook，与普通进程共用同一 spawn 路径（修复 errno=-1）。
-	extern bool isBlacklistedPath(const char* path);
-	if (isBlacklistedPath(path)) {
-		return kSpawnConfigTrust;
-	}
-
 	// Blacklist to ensure general system stability
 	// I don't like this but for some processes it seems neccessary
 	const char *processBlacklist[] = {

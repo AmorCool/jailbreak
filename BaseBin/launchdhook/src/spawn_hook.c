@@ -303,21 +303,21 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		// build38.50: 根本性修复屏蔽闪退（日志 launchdhook_boot.log 实测所有黑名单
 		// app spawn 返回 -1，普通 app 同路径 spawn 成功）。
 		// 根因：38.43 恢复黑名单判定后直接 __posix_spawn_orig_wrapper，跳过了
-		// posix_spawn_hook_shared 的信任/jetsam/persona 前置处理 → iOS16+ 上
-		// App Store 二进制 posix_spawn 直接失败（ret=-1）→ 开黑名单即闪退。
-		// 修复：走 posix_spawn_hook_shared（与普通进程共用 spawn 路径），
-		// 仅通过 spawn_config_for_executable 返回 kSpawnConfigTrust 关闭 systemhook 注入。
-		// EPERM 门控（dyld_patch_enabled && iOS15Arm64e）在 iOS16+ 为假，不触发——
-		// 黑名单 app 的扩展/预热进程不再被拒绝，正常启动。
+		// posix_spawn_hook_shared 里的 trust_binary（信任二进制）→ App Store app
+		// 未入 trustcache → iOS16 posix_spawn 直接失败（ret=-1）→ 开黑名单即闪退。
+		// 修复：手动调用 roothide_launchd_trust_executable（与 posix_spawn_hook_shared
+		// 内的 trust_binary 等价，信任二进制及其依赖），再 orig_wrapper 不注入
+		// systemhook（符合 roothide 屏蔽语义：隐藏越狱环境）。
 		char **envc = envbuf_mutcopy((const char **)envp);
 		envbuf_unsetenv(&envc, "_SafeMode");
 		envbuf_unsetenv(&envc, "_MSSafeMode");
 
+		// 信任二进制（修复 ret=-1 的根因：信任缺失）
+		roothide_launchd_trust_executable(path);
+
 		errno = 0;
-		int ret = posix_spawn_hook_shared(pidp, path, desc, argv, envc,
-			__posix_spawn_orig_wrapper, roothide_launchd_trust_executable,
-			platform_set_process_debugged, jbsetting(jetsamMultiplier));
-		bootlog("blacklisted app %s -> posix_spawn_hook_shared ret=%d errno=%d (%s)", path, ret, errno, strerror(errno));
+		int ret = __posix_spawn_orig_wrapper(pidp, path, desc, argv, envc);
+		bootlog("blacklisted app %s -> orig ret=%d errno=%d (%s)", path, ret, errno, strerror(errno));
 		envbuf_free(envc);
 		return ret;
 	}
