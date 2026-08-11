@@ -23,7 +23,7 @@
 #import <fts.h>
 #import "NSString+Version.h"
 
-#define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.3"
+#define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.4"
 #define LIBROOT_DOPAMINE_BUNDLED_VERSION @"1.0.1"
 #define BASEBIN_LINK_BUNDLED_VERSION @"1.0.0"
 #define LAUNCHCTL_BUNDLED_VERSION @"1:1.2.0"
@@ -1207,7 +1207,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // 跳过 3.x 的 arm64 deb——它们与 roothide procursus 的 arm64e 体系架构不匹配，
     // dpkg 会报 "package architecture (iphoneos-arm64) does not match system (iphoneos-arm64e)"
     BOOL shouldInstallLibroot = NO;
-    BOOL shouldInstallLibkrw = NO;
+    // build38.63: libkrw-dopamine.deb 已打包进 .tipa 并提供 libkrw0-plugin，
+    // 但之前被硬编码 NO 导致从未安装 → Sileo 报 "libkrw0 Depends libkrw0-plugin"。
+    BOOL shouldInstallLibkrw = [self shouldInstallPackage:@"libkrw0-dopamine"];
     BOOL shouldInstallBasebinLink = [self shouldInstallPackage:@"dopamine-basebin-link"];
     BOOL shouldInstallLaunchctl = NO;
     if (__builtin_available(iOS 19.0, *)) {
