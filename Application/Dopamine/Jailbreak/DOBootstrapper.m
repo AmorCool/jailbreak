@@ -962,10 +962,9 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
 - (void)ensureExtraPackagesInstalled
 {
-    // 用户指定的预装包：AppSync Unified（ai.akemi.appsyncunified，允许装未签名/伪签名 app）
-    // + TrollStore Lite（com.opa334.trollstorelite，roothide 版 TrollStore，装 /Applications/TrollStoreLite.app）。
-    // 幂等安装（installPackage 带 --force-depends），每次越狱都跑；缺文件时静默跳过。
-    // build38.35 新增 roothide 插件运行时三件套（顺序即依赖顺序）：
+    // 用户指定（2026-08-11）的预装包——**取消内置 AppSync**（之前 38.35~38.53 自动装
+    // appsync.deb 引发 dpkg inconsistent / "needs to be reinstalled" 报错，用户要求
+    // 不再内置）。保留 roothide 插件运行时必需三件套（顺序即依赖顺序）：
     //   1. patchloader.deb（com.roothide.patchloader，RootHide Dynamic Patches Loader，
     //      产物 /usr/lib/roothidepatch.dylib，systemhook 的 roothider_main.c 要 dlopen 它。
     //      bootstrap 不含它（rh2 时代由用户在 Sileo 手动装），缺它 → DynamicPatches 不加载 →
@@ -974,11 +973,8 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     //      Depends com.roothide.patchloader>=0.0.4，用户设备导出版 2.0 = 官方最新）
     //   3. ellekit.deb（mobilesubstrate 替身：Provides mobilesubstrate(=99) + 提供
     //      libsubstrate/TweakInject 符号链，rootless 插件的依赖检查与链接需要。官方源 1.2。）
-    // build38.37: AppSync 必须在 ellekit 之后装——appsync 的 Depends 是
-    // mobilesubstrate (>= 0.9.5100)，而 ellekit 是 mobilesubstrate 的提供者。
-    // 38.35/38.36 把 appsync 排最前 → dpkg 强装后依赖仍不满足 → Sileo 数据库里
-    // AppSync 状态异常 → 弹 "needs to be reinstalled, but I can't find an archive for it"。
-    NSArray *extraDebs = @[@"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb", @"appsync.deb", @"tslite.deb"];
+    // appsync 用户想用可从 akemi 源手动装（Needs mobilesubstrate 由 ellekit 提供）。
+    NSArray *extraDebs = @[@"patchloader.deb", @"rootless-compat.deb", @"ellekit.deb", @"tslite.deb"];
     for (NSString *deb in extraDebs) {
         NSString *path = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:deb];
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) continue;
@@ -1040,13 +1036,13 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     // sileolists"。改用 C 系统调用 mkdir()/chown()/chmod()（libc 直调内核，无需信任、
     // 无需 sandbox extension），逐项检查返回值并记日志。
     const char *aptDir = JBROOT_PATH("/var/lib/apt");
-    if (mkdir(aptDir, 0755) != 0 && errno != EEXIST) {
+    if (mkdir(aptDir, 0775) != 0 && errno != EEXIST) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", aptDir, strerror(errno)] debug:YES];
     }
     if (chown(aptDir, 501, 501) != 0) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", aptDir, strerror(errno)] debug:YES];
     }
-    if (chmod(aptDir, 0755) != 0) {
+    if (chmod(aptDir, 0775) != 0) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", aptDir, strerror(errno)] debug:YES];
     }
     NSArray *mobileOwnedDirs = @[
@@ -1056,16 +1052,44 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     for (NSString *d in mobileOwnedDirs) {
         NSString *p = JBROOT_PATH(d);
         const char *pC = p.fileSystemRepresentation;
-        if (mkdir(pC, 0755) != 0 && errno != EEXIST) {
+        if (mkdir(pC, 0775) != 0 && errno != EEXIST) {
             [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: mkdir %s failed: %s", pC, strerror(errno)] debug:YES];
         }
         if (chown(pC, 501, 501) != 0) {
             [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chown %s failed: %s", pC, strerror(errno)] debug:YES];
         }
-        if (chmod(pC, 0755) != 0) {
+        if (chmod(pC, 0775) != 0) {
             [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod %s failed: %s", pC, strerror(errno)] debug:YES];
         }
     }
+
+    // build38.55: 递归 chmod sileolists 下所有文件为 0664。
+    // 用户 iOS 18.0（不是 16.3.1）—— 38.53/38.54 的 Sileo root spawn (persona override)
+    // 被 iOS 17.6+ kernel 封禁完全跳过，代码不执行（__builtin_available 跳过）。
+    // iOS 18 上 Sileo 只能以 mobile 身份运行，无法 root 化。必须让 sileolists 下
+    // 所有已有文件 mobile 可写。Sileo 启动时 rm -rf sileolists + 重建（如果它能 rm）。
+    // 旧 root 文件（0644）保留——Sileo(mobile) 无法覆盖（其他用户只读）。
+    // 解决：把所有现有 root-owned 文件 chmod 0664（mobile 组可写）。
+    NSString *sileoDir = JBROOT_PATH(@"/var/lib/apt/sileolists");
+    NSDirectoryEnumerator<NSString *> *enumerator = [[NSFileManager defaultManager] enumeratorAtPath:sileoDir];
+    int fixedCount = 0;
+    for (NSString *rel in enumerator) {
+        NSString *full = [sileoDir stringByAppendingPathComponent:rel];
+        const char *fullC = full.fileSystemRepresentation;
+        struct stat st;
+        if (stat(fullC, &st) == 0) {
+            if (S_ISREG(st.st_mode)) {
+                // 普通文件：chmod 0664 (rw-rw-r--)，让 mobile 组可写
+                if (chmod(fullC, 0664) == 0) fixedCount++;
+            } else if (S_ISDIR(st.st_mode)) {
+                // 子目录：chmod 0775 (rwxrwxr-x)
+                chmod(fullC, 0775);
+            }
+            // 尝试 chown 501:501（之前 root-owned 文件，让 Sileo(mobile) 完全拥有）
+            chown(fullC, 501, 501);
+        }
+    }
+    [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod -R 0664 sileolists/* fixed %d files (iOS18 no-root fallback)", fixedCount] debug:YES];
 
     // 2) apt / dpkg 自用目录，保持 root:wheel。
     //    /Library/dpkg/updates 是 dpkg 的 status journal 目录，Sileo 与 apt 判定

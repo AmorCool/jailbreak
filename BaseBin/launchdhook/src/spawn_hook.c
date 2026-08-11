@@ -100,30 +100,12 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 					   char *const argv[restrict],
 					   char *const envp[restrict])
 {
-	// build38.54: 完全手动设置 persona_info，绕过 posix_spawnattr_set_persona_np 不确定性。
-	// 38.53 用 posix_spawnattr_set_persona_np + 读 *pinfo_p 设 uid/gid，实测 Sileo 仍报
-	// 无权限（用户截图 18:57）——set_persona_np 可能只设 attr 元数据未分配 personaInfo 结构，
-	// *pinfo_p 为 NULL 跳过 uid/gid 设，Sileo 仍以默认 mobile 启动。
-	// 修复：分配 static personaInfo（launchd 常驻，安全），直接写入 attr + OFF_PERSONA。
-	// 同时兼容 com.opa334.Sileo（Sileo.app/Sileo）和 org.coolstar.SileoStore
-	// （SileoStore.app/SileoStore），以及 jbroot 内变长路径（sbxx_sileo 等）。
-	if (path && desc && desc->attrp
-		&& !__builtin_available(iOS 17.6, *)
-		&& (string_has_suffix(path, "/Sileo.app/Sileo")
-			|| string_has_suffix(path, "/SileoStore.app/SileoStore"))) {
-		posix_spawnattr_t attr = desc->attrp;
-		static struct _posix_spawn_persona_info sileoRootPersona;
-		static bool initialized = false;
-		if (!initialized) {
-			sileoRootPersona.pspi_id = 99;
-			sileoRootPersona.pspi_flags = POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE;
-			sileoRootPersona.pspi_uid = 0;
-			sileoRootPersona.pspi_gid = 0;
-			initialized = true;
-		}
-		*(struct _posix_spawn_persona_info **)((uint8_t *)attr + POSIX_SPAWNATTR_OFF_PERSONA) = &sileoRootPersona;
-		bootlog("roothide: Sileo persona override INJECTED (uid=0 gid=0 persona=99 OVERRIDE)");
-	}
+	// build38.55: 删除 Sileo persona override 代码。
+	// 用户实测 iOS 18.0（不是 memory 里写的 16.3.1）—— `__builtin_available(iOS 17.6, *)`
+	// 在 iOS 18 上为真，整个 if 块跳过，persona override 从未执行。38.53/38.54 在 iOS 18 上
+	// 完全无效。Apple iOS 17.6+ kernel 封禁任何 persona override（包括 launchd root→root），
+	// Sileo 无法 root 化。iOS 18 上唯一可行方案是 chmod/chown 让 sileolists mobile 可写
+	// （见 DOBootstrapper.m ensureSileoAndAptDirectories build38.55 递归 chmod 0664）。
 
 	if (path) {
 		// build38.27: 38.22 的 ensure_jbroot_symlink 加在 roothide_launchd___posix_spawn_prehook
