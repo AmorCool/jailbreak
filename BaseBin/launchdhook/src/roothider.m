@@ -197,6 +197,33 @@ void roothide_launchd_postinit(bool firstLoad)
 		} else {
 			JBLogError("roothide: HOOK_DYLIB_PATH=%s verified accessible, fakelib mount OK.", HOOK_DYLIB_PATH);
 		}
+
+		// build38.48: 每次 postinit（用户空间重启后）直接修 sileolists/apt 目录属主。
+		// Sileo(mobile) 写 Packages 到 <jbroot>/var/lib/apt/sileolists 需要 mobile 可写；
+		// 该目录属主本应靠 Sileo 自己的 spawnAsRoot(chown) 修复，但 spawnAsRoot 依赖
+		// systemhook 注入 + persona fix 链（iOS17.6+ 封禁 root persona），任一环降级
+		// → 目录保持 root:wheel → Sileo 永远无权限。launchdhook 跑在 launchd(root) 里，
+		// 在用户空间重启后、任何 app 启动前直接 chown，不依赖注入链（幂等）。
+		{
+			const char *mobileDirs[] = {
+				JBROOT_PATH("/var/lib/apt"),
+				JBROOT_PATH("/var/lib/apt/sileolists"),
+				JBROOT_PATH("/var/lib/apt/sileolists/operations"),
+			};
+			for (int i = 0; i < (int)(sizeof(mobileDirs) / sizeof(mobileDirs[0])); i++) {
+				const char *p = mobileDirs[i];
+				if (mkdir(p, 0755) != 0 && errno != EEXIST) {
+					// ignore: parent may be missing on first boot, try chown anyway
+				}
+				if (chown(p, 501, 501) != 0) {
+					JBLogError("roothide: chown %s to mobile failed: %s", p, strerror(errno));
+				}
+				if (chmod(p, 0755) != 0) {
+					JBLogError("roothide: chmod %s failed: %s", p, strerror(errno));
+				}
+			}
+			JBLogError("roothide: sileolists/apt dirs ownership fixed (mobile:mobile 501:501)");
+		}
 	}
 
 	if (__builtin_available(iOS 16.0, *))
