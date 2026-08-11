@@ -118,6 +118,19 @@ jobs:
           cd Application/Dopamine/Resources
           ./download_bootstraps.sh
 
+      - name: Build Provider debs
+        run: |
+          # roothide 3.x roothider 黑名单 / libkrw Plugin (kernel R/W) / launchctl link 三个
+          # 二进制必须本地 build 出 libkrw-dopamine.deb、libroot-dopamine.deb、
+          # dopamine-basebin-link.deb，否则 pbxproj 引用的 Resources/*.deb 在 build 时缺失，
+          # Dopamine bootstrap 装 libkrw-dopamine 失败，dpkg status 留下
+          # "Depends: libkrw0-plugin but it is not installable"，后续每次 Sileo 更新/卸载
+          # 都报错（构建产物 .tipa 内缺 deb）。
+          gmake -C Packages/libkrw-provider package
+          gmake -C Packages/libroot package
+          gmake -C Packages/basebin-link package
+          ls -lh Packages/libkrw-provider/libkrw-dopamine.deb Packages/libroot/libroot.deb Packages/basebin-link/basebin-link.deb 2>/dev/null
+
       - name: Pre Fix
         run: |
           sed -i '' 's/\/include/\/include -I..\/.include/g' BaseBin/XPF/Makefile

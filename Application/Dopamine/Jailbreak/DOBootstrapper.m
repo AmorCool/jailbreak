@@ -20,6 +20,7 @@
 #import <sys/wait.h>
 #import <signal.h>
 #import <errno.h>
+#import <fts.h>
 #import "NSString+Version.h"
 
 #define LIBKRW_DOPAMINE_BUNDLED_VERSION @"2.0.3"
@@ -1063,33 +1064,29 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
         }
     }
 
-    // build38.55: 递归 chmod sileolists 下所有文件为 0664。
-    // 用户 iOS 18.0（不是 16.3.1）—— 38.53/38.54 的 Sileo root spawn (persona override)
-    // 被 iOS 17.6+ kernel 封禁完全跳过，代码不执行（__builtin_available 跳过）。
-    // iOS 18 上 Sileo 只能以 mobile 身份运行，无法 root 化。必须让 sileolists 下
-    // 所有已有文件 mobile 可写。Sileo 启动时 rm -rf sileolists + 重建（如果它能 rm）。
-    // 旧 root 文件（0644）保留——Sileo(mobile) 无法覆盖（其他用户只读）。
-    // 解决：把所有现有 root-owned 文件 chmod 0664（mobile 组可写）。
-    NSString *sileoDir = JBROOT_PATH(@"/var/lib/apt/sileolists");
-    NSDirectoryEnumerator<NSString *> *enumerator = [[NSFileManager defaultManager] enumeratorAtPath:sileoDir];
-    int fixedCount = 0;
-    for (NSString *rel in enumerator) {
-        NSString *full = [sileoDir stringByAppendingPathComponent:rel];
-        const char *fullC = full.fileSystemRepresentation;
-        struct stat st;
-        if (stat(fullC, &st) == 0) {
-            if (S_ISREG(st.st_mode)) {
-                // 普通文件：chmod 0664 (rw-rw-r--)，让 mobile 组可写
-                if (chmod(fullC, 0664) == 0) fixedCount++;
-            } else if (S_ISDIR(st.st_mode)) {
-                // 子目录：chmod 0775 (rwxrwxr-x)
-                chmod(fullC, 0775);
+    // build38.57: 整棵树递归 chmod 0777（用户图证实：owner/组/其它全部 rwx，应用到所有子项目）。
+    // 38.55 只递归了 sileolists/* 为 0664，但 sileolists/ 本身仍是 0755（mobile 组只 r-x，
+    // 不能在里面新建文件）；用户 Filza 截图证明必须整树 0777 让任何人任意写。
+    // 用 fts 递归，省事且高效。
+    NSString *aptTree = JBROOT_PATH(@"/var/lib/apt");
+    int dirCount = 0, fileCount = 0;
+    FTS *fts = fts_open((const char *[]){aptTree.fileSystemRepresentation, NULL},
+                        FTS_PHYSICAL | FTS_NOCHDIR, NULL);
+    if (fts) {
+        FTSENT *ent;
+        while ((ent = fts_read(fts)) != NULL) {
+            const char *p = ent->fts_path;
+            if (ent->fts_info == FTS_D || ent->fts_info == FTS_DP) {
+                if (chmod(p, 0777) == 0) dirCount++;
+                chown(p, 501, 501);
+            } else if (ent->fts_info == FTS_F) {
+                if (chmod(p, 0777) == 0) fileCount++;
+                chown(p, 501, 501);
             }
-            // 尝试 chown 501:501（之前 root-owned 文件，让 Sileo(mobile) 完全拥有）
-            chown(fullC, 501, 501);
         }
+        fts_close(fts);
     }
-    [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod -R 0664 sileolists/* fixed %d files (iOS18 no-root fallback)", fixedCount] debug:YES];
+    [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"ensureSileo: chmod -R 0777 apt tree, dirs=%d files=%d (user fix)", dirCount, fileCount] debug:YES];
 
     // 2) apt / dpkg 自用目录，保持 root:wheel。
     //    /Library/dpkg/updates 是 dpkg 的 status journal 目录，Sileo 与 apt 判定
