@@ -468,13 +468,13 @@ __attribute__((constructor)) static void initializer(void)
 	roothide_init_with_checkin(JB_RootPath); // will hook dlopen* if necessary
 /*************************** roothide ************************/
 
-#ifdef __arm64e__
 	// Since pages have been modified in this process, we need to load forkfix to ensure forking will work
 	// Optimization: If the process cannot fork at all due to sandbox, we don't need to do anything
+	// build38.41: 去掉 __arm64e__ 门控——procursus 工具（apt-get 等）是 arm64 二进制，
+	// 同样会因修改可执行页在 fork 时触发 CODESIGNING Invalid Page，必须加载 forkfix。
 	if (sandbox_check(getpid(), "process-fork", SANDBOX_CHECK_NO_REPORT, NULL) == 0) {
 		dlopen(JBROOT_PATH("/basebin/forkfix.dylib"), RTLD_NOW);
 	}
-#endif
 
 	if (load_executable_path() == 0) {
 		// Load roothidehooks / watchdoghook when neccessary
