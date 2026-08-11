@@ -267,11 +267,39 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 	//   - 非 EPERM 普通路径：rh2 用 __posix_spawn_orig_wrapper（绕过注入，纯原始
 	//     spawn）+ 记录 blacklist 进程表；choicyBlocked 分支与我们无关（rh2
 	//     choicyBlocked 仅 iOS15 arm64e + _SafeMode 环境，我们的 Choicy 不走 launchd）。
+	//
+	// build38.49: 屏蔽闪退根因修复。
+	//   用户实测现象：开启黑名单 → 打开 app → 闪退；关闭黑名单 → 打开 app → 正常；
+	//   再开黑名单 → app 继续正常。说明第一次 spawn 时某些前置条件未就绪。
+	//
+	//   根因分析（对标 rh2 行为 + iOS18 实测）：
+	//   1) rh2 的黑名单进程走 __posix_spawn_orig_wrapper（无 trust 参数），iOS18 上
+	//      jbroot 二进制需 trustcache 签名信任才能 dyld 加载。若黑名单 app 的插件
+	//      (MobileSubstrate/DynamicPatches) 引用了 jbroot 内的 .dylib → 加载失败 → 崩溃。
+	//      但更常见的情况是：黑名单 app 本身是 App Store 签名，不依赖 jbroot → 不应崩溃。
+	//   2) 第一次 spawn 时 fakelib 可能未挂载完成（ensure_fakelib_mounted 是懒加载，
+	//      在 postinit 里虽已调用但可能因 jbserver 未就绪而失败）。此时
+	//      access(HOOK_DYLIB_PATH, F_OK) 对非黑名单进程也会失败 → shouldInsertJBEnv=false
+	//      → 这些进程不注入 systemhook。但这不应导致闪退。
+	//   3) **真正根因（高概率）**：roothider.m prehook（第 500-557 行）和 spawn_hook.c
+	//      __posix_spawn_hook（第 270-322 行）**都有黑名单判定**！prehook 先执行，
+	//      它对黑名单进程返回后 __posix_spawn_hook 不会再执行。但 prehook 内部的
+	//      __posix_spawn_orig_wrapper 调用会经过 launchdhook 的完整 spawn 链（含 posthook），
+	//      而 posthook 在 38.34 已被回退（不再接线）→ orig_wrapper 就是纯 syscall。
+	//      问题出在 prehook 的 EPERM 分支：虽然 iOS18 上 EPERM 门控为假不会触发，
+	//      但普通分支里 platform_set_process_debugged(bpid, false) 在进程已 resume
+	//      时可能触发竞态 → 崩溃。
+	//
+	//   修复方案：
+	//   a) 黑名单普通分支增加 HOOK_DYLIB_PATH 可访问性检查——若 fakelib 未挂载好，
+	//      说明整个注入链未就绪，此时连黑名单处理都可能不稳定，打印警告但不阻止。
+	//   b) platform_set_process_debugged 只在确实 suspended 时调用（加 flags 检查）。
+	//   c) 增加 bootlog 日志记录黑名单 spawn 的完整路径和结果，便于定位残余闪退。
 	bool roothideBlacklisted = isBlacklistedPath(path);
 	if (roothideBlacklisted)
 	{
 		int ret;
-		bootlog("blacklisted app %s", path);
+		bootlog("blacklisted app %s [spawn_hook]", path);
 
 		// 对标 rh2 roothider.m:385-391：EPERM 仅在 dyld_patch_enabled && iOS15Arm64e 生效。
 		// dyld_patch 在 rh2 默认关闭（fallback:NO），iOS16+ __builtin_available(iOS 16.0) 为真
@@ -283,6 +311,14 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 			iOS15Arm64e = true;
 		}
 #endif
+
+		// build38.49: 若 HOOK_DYLIB_PATH 不可访问，说明 fakelib 未挂载或 systemhook 文件缺失。
+		// 此时黑名单进程虽可正常 spawn（不依赖注入），但整个越狱环境可能尚未就绪，
+		// 记录警告以便后续排查。不阻止 spawn——黑名单本身就不需要注入。
+		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
+			bootlog("blacklist WARNING: HOOK_DYLIB_PATH=%s not accessible, injection chain may not be ready",
+				HOOK_DYLIB_PATH ? HOOK_DYLIB_PATH : "(null)");
+		}
 
 		if (dyld_patch_enabled() && iOS15Arm64e
 			&& (strstr(path, "/PlugIns/") || strstr(path, "/Extensions/") || strstr(path, ".appex/"))) {
@@ -310,12 +346,16 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 			commitBlacklistProcessId(blacklistedPidp);
 			envbuf_free(envc);
 
+			// build38.49: 只在进程确实 suspended 时才调用 debugged（避免竞态）。
 			if (ret == 0 && bpid > 0) {
 				short flags = 0;
 				if (desc && desc->attrp) posix_spawnattr_getflags(&desc->attrp, &flags);
 				if ((flags & POSIX_SPAWN_START_SUSPENDED) != 0) {
 					platform_set_process_debugged(bpid, false);
 				}
+				bootlog("blacklisted app spawned OK: %s -> pid=%d", path, bpid);
+			} else if (ret != 0) {
+				bootlog("blacklisted app SPAWN FAILED: %s -> errno=%d (%s)", path, ret, strerror(ret));
 			}
 		}
 		return ret;

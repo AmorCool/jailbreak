@@ -1238,9 +1238,17 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 
     // ===== dpkg 一致性收尾 =====
     // 必须放在所有 installPackage 之后：这里跑的 dpkg --configure -a 会 replay 并清空
-    // status journal，若后面还有 dpkg -i，又会留下新的 journal，Sileo 照样弹“dpkg 被中断”。
+    // status journal，若后面还有 dpkg -i，又会留下新的 journal，Sileo 照样弹"dpkg 被中断"。
     [[DOUIManager sharedInstance] sendLog:@"Reconciling dpkg database" debug:NO];
     [self ensureDpkgConsistent];
+
+    // build38.49: 在 finalizeBootstrap 成功结束时生成诊断日志。
+    // writeDpkgDiagnostics 定义了但从未被调用（38.11~48 遗漏）→ 用户问
+    // "/var/mobile/Media/dopamine_dpkg_diag.log 怎么搞"——日志根本不存在。
+    // 日志包含 dpkg journal、locks、sileolists 权限、roothidepatch 状态等关键诊断信息，
+    // 越狱后用 AFC（爱思/iMazing）从 /var/mobile/Media/ 直接取出即可定位问题。
+    [[DOUIManager sharedInstance] sendLog:@"Writing dpkg diagnostics log" debug:NO];
+    [self writeDpkgDiagnostics];
 
     return nil;
 }
