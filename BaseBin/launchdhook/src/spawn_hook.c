@@ -255,7 +255,7 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		volatile pid_t* blacklistedPidp = allocBlacklistProcessId();
 		int ret = __posix_spawn_orig_wrapper(blacklistedPidp, path, desc, argv, envc);
 		pid_t bpid = *blacklistedPidp;
-		if (pidp) *pidp = bpid;
+		if (pid) *pid = bpid;
 		commitBlacklistProcessId(blacklistedPidp);
 		envbuf_free(envc);
 		if (ret == 0 && bpid > 0) {
