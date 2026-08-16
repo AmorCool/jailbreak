@@ -993,24 +993,6 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
 }
 
 
-// build38.66: 设 root 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
-// iOS 18 默认 master.passwd 把 root 密码字段写成 "*" (lock)，导致：
-//   - Terminal app 本地 console "login: root" → Login incorrect
-//   - sshd 接受密码登录时 root 也进不去
-// Dopamine 上游 (5bee173) 从未设过 root 密码，导致 roothide 3.x 用户没有可用 root shell。
-// 行业标准（checkra1n/palera1n/Dopamine 2.x 都用这个 hash）：DES crypt "alpine"。
-// 幂等：已设过（密码字段不是 "*"/"!"/""/空）就跳过，不覆盖用户自定义密码。
-//
-// build38.66 关键修：38.65 用 exec_cmd_trusted 跑 mobile uid 子进程，写 root:wheel 0600 的
-// master.passwd 必 EACCES → 静默失败。Dopamine app 进程调 runAsRoot 把 uid/gid 临时
-// 改成 0，再 runUnsandboxed 移除 sandbox，**在进程上下文直接 C 系统调用**读/写文件。
-//
-// build38.68 修：38.66/38.67 写入路径错写成 /var/master.passwd（那是 Xina 残留、rh2 会删除的
-// 文件，真实根不存在 → open ENOENT）。roothide 把 jbroot (/var/jb) 当作根，Terminal/login 读的
-// /etc/master.passwd 实际是 /var/jb/etc/master.passwd（data 卷可写；真实 /etc 在系统只读卷写不了）。
-// 且只改 master.passwd 不够——iOS 的 getpwnam/login 读 pwd_mkdb 生成的 spwd.db，必须重跑
-// /usr/sbin/pwd_mkdb -p 重生成数据库，新密码才对 login/sshd 生效。
-
 // build38.67: 持久化诊断日志。sendLog 只写内存数组 (_logRecord)，app 被杀/用户空间重启即丢，
 // 用户多次反馈"越狱完重启 app 日志就没了，没法给我看"。这里把关键诊断追加写入
 // /var/mobile/Media/dopamine_rootpw.log（mobile 拥有的媒体目录，AFC/爱思可直接导出），
@@ -1030,129 +1012,6 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     chown(path, 501, 501);
     chmod(path, 0644);
 }
-
-- (void)ensureRootPassword
-{
-    void (^DIAG)(NSString *, BOOL) = ^(NSString *msg, BOOL dbg){
-        [[DOUIManager sharedInstance] sendLog:msg debug:dbg];
-        [self appendDiag:msg];
-    };
-
-    DIAG(@"Setting root password (alpine)", NO);
-
-    DOEnvironmentManager *env = [DOEnvironmentManager sharedManager];
-
-    [env runAsRoot:^{
-        [env runUnsandboxed:^{
-            // roothide 把 jbroot (/var/jb) 当作根：Terminal/login 读 /etc/master.passwd
-            // 实际是 /var/jb/etc/master.passwd（data 卷可写）。真实 /etc 在系统只读卷，写不了。
-            // build38.66 错写成 /var/master.passwd（Xina 残留、rh2 会删）→ ENOENT。
-            NSString *passwdPathStr = JBROOT_PATH(@"/etc/master.passwd"); // -> /var/jb/etc/master.passwd
-            const char *passwdPath = passwdPathStr.fileSystemRepresentation;
-
-            struct stat st;
-            if (stat(passwdPath, &st) != 0) {
-                DIAG([NSString stringWithFormat:@"ensureRootPassword: jbroot %s missing errno=%d %s", passwdPath, errno, strerror(errno)], YES);
-                return;
-            }
-            DIAG([NSString stringWithFormat:@"ensureRootPassword: found %s size=%lld", passwdPath, (long long)st.st_size], YES);
-
-            int fd = open(passwdPath, O_RDONLY);
-            if (fd < 0) {
-                DIAG([NSString stringWithFormat:@"ensureRootPassword: open read failed errno=%d %s", errno, strerror(errno)], YES);
-                return;
-            }
-            char buf[16384];
-            ssize_t n = read(fd, buf, sizeof(buf) - 1);
-            close(fd);
-            if (n <= 0) {
-                DIAG(@"ensureRootPassword: read returned 0 or error", YES);
-                return;
-            }
-            buf[n] = '\0';
-
-            char *rootLineStart = (buf[0] == 'r' && strncmp(buf, "root:", 5) == 0) ? buf : strstr(buf, "\nroot:");
-            if (!rootLineStart) {
-                DIAG(@"ensureRootPassword: no root line found", YES);
-                return;
-            }
-            if (*rootLineStart == '\n') rootLineStart++;
-            char *colon1 = strchr(rootLineStart, ':');
-            if (!colon1) {
-                DIAG(@"ensureRootPassword: root line malformed", YES);
-                return;
-            }
-            char *colon2 = strchr(colon1 + 1, ':');
-            if (!colon2) {
-                DIAG(@"ensureRootPassword: root line no 2nd colon", YES);
-                return;
-            }
-
-            size_t pwdLen = colon2 - (colon1 + 1);
-            char curPwd[64] = {0};
-            memcpy(curPwd, colon1 + 1, pwdLen > 63 ? 63 : pwdLen);
-
-            NSString *cur = [NSString stringWithUTF8String:curPwd];
-            DIAG([NSString stringWithFormat:@"ensureRootPassword: root pwd field=[%@] len=%zu", cur ?: @"?", pwdLen], YES);
-
-            // 跳过已是有效密码（hash 非空且不是 * ! NP LK）
-            if (cur.length > 0 && ![cur isEqualToString:@"*"] && ![cur isEqualToString:@"!"] &&
-                ![cur hasPrefix:@"*NP"] && ![cur hasPrefix:@"*LK"]) {
-                DIAG(@"ensureRootPassword: already has password, skip", NO);
-                return;
-            }
-
-            const char *alpineHash = "9BalK0iTb6cog";
-            size_t hashLen = strlen(alpineHash);
-
-            size_t headLen = colon1 + 1 - buf;
-            size_t tailLen = n - (colon2 - buf);
-
-            char outBuf[16384];
-            if (headLen + hashLen + tailLen >= sizeof(outBuf)) {
-                DIAG(@"ensureRootPassword: buffer too small", YES);
-                return;
-            }
-            memcpy(outBuf, buf, headLen);
-            memcpy(outBuf + headLen, alpineHash, hashLen);
-            memcpy(outBuf + headLen + hashLen, colon2, tailLen);
-            size_t newLen = headLen + hashLen + tailLen;
-
-            // 写 .tmp 再 rename（atomic），避免中途崩溃破坏文件
-            char tmpPath[64];
-            snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", passwdPath);
-
-            int wfd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (wfd < 0) {
-                DIAG([NSString stringWithFormat:@"ensureRootPassword: open tmp failed errno=%d %s", errno, strerror(errno)], YES);
-                return;
-            }
-            ssize_t wn = write(wfd, outBuf, newLen);
-            close(wfd);
-            if (wn != (ssize_t)newLen) {
-                DIAG([NSString stringWithFormat:@"ensureRootPassword: write failed rc=%zd errno=%d %s", wn, errno, strerror(errno)], YES);
-                unlink(tmpPath);
-                return;
-            }
-            if (rename(tmpPath, passwdPath) != 0) {
-                DIAG([NSString stringWithFormat:@"ensureRootPassword: rename failed errno=%d %s", errno, strerror(errno)], YES);
-                unlink(tmpPath);
-                return;
-            }
-            chmod(passwdPath, 0644);
-            chown(passwdPath, 0, 0);
-
-            DIAG([NSString stringWithFormat:@"ensureRootPassword: root password set to 'alpine' (DES %s), %zu bytes", alpineHash, newLen], NO);
-
-            // 关键：iOS 的 getpwnam/login 读 pwd_mkdb 生成的 spwd.db，不读 master.passwd 本身。
-            // 只改 master.passwd 不重生成 db，新密码对 login/sshd 完全无效（这正是之前"改了也没用"的根因）。
-            NSString *pwdMkdb = JBROOT_PATH(@"/usr/sbin/pwd_mkdb");
-            int mkdbRc = [self execTrustedWithTimeout:15.0 binary:pwdMkdb arguments:@[@"-p", passwdPathStr]];
-            DIAG([NSString stringWithFormat:@"ensureRootPassword: pwd_mkdb rc=%d", mkdbRc], NO);
-        }];
-    }];
-}
-
 
 - (void)ensureSileoAndAptDirectories
 {
@@ -1357,12 +1216,6 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
-    // build38.65: 设 root 密码 = alpine。必须在 trust 链里跑，且不需要 dpkg。
-    // 必须在 ensureSileoAndAptDirectories 之前：iOS 18 root 密码被 lock → Terminal
-    // 本地 console / ssh root 都进不去 → 用户没有任何 root shell 调试链路。
-    [self appendDiag:@"ensureRootPassword begin"];
-    [self ensureRootPassword];
-    [self appendDiag:@"ensureRootPassword done"];
     // build38.36: 装新包前先清历史 dpkg journal/半状态——用户设备历史上 dpkg 中断过，
     // 若 updates/ 残留 journal，后续 dpkg -i 会先 replay 旧事务（可能卡住/报错）。
     // 先 --configure -a 清干净，再装三件套，最后收尾再清一次。
