@@ -1013,6 +1013,157 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     chmod(path, 0644);
 }
 
+// build38.69: 设 mobile(501) 与 root(0) 密码 = "alpine"（DES crypt 哈希 9BalK0iTb6cog）。
+// 背景：roothide 原版模型是 mobile 密码 + sudo（sudoers.d/%mobile 已授权），root 在 bootstrap 里
+// 是 "!" 锁死设计（不靠 root 登录）。我们的 build 从 3.x_modify 继承了 NO_PASSWORD_PROMPT=1，
+// 跳过了 prep_bootstrap.sh 的密码弹窗。结果是 mobile 密码变成 bootstrap 自带的未知 $6 hash
+//（用户根本不知道）→ 无法 login mobile / sudo；root 又 "!" 锁死 → 无法 login root。两头皆废。
+// 修法：直接在 app 里把 mobile 和 root 的密码设成已知值 alpine，并重跑 pwd_mkdb 生成 spwd.db
+//（iOS 的 getpwnam/login/sudo 读 spwd.db，不读 master.passwd 本身）。不碰弹窗、不挂死。
+// 幂等：mobile/root 密码已是 alpine 就跳过。
+
+- (void)ensureDefaultPasswords
+{
+    void (^DIAG)(NSString *, BOOL) = ^(NSString *msg, BOOL dbg){
+        [[DOUIManager sharedInstance] sendLog:msg debug:dbg];
+        [self appendDiag:msg];
+    };
+
+    DIAG(@"Setting default passwords (mobile+root = alpine)", NO);
+
+    DOEnvironmentManager *env = [DOEnvironmentManager sharedManager];
+
+    [env runAsRoot:^{
+        [env runUnsandboxed:^{
+            // roothide 把 jbroot (/var/jb) 当作根：Terminal/login 读 /etc/master.passwd
+            // 实际是 /var/jb/etc/master.passwd（data 卷可写）。真实 /etc 在系统只读卷写不了。
+            NSString *passwdPathStr = JBROOT_PATH(@"/etc/master.passwd"); // -> /var/jb/etc/master.passwd
+            const char *passwdPath = passwdPathStr.fileSystemRepresentation;
+
+            struct stat st;
+            if (stat(passwdPath, &st) != 0) {
+                DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: %s missing errno=%d %s", passwdPath, errno, strerror(errno)], YES);
+                return;
+            }
+            DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: found %s size=%lld", passwdPath, (long long)st.st_size], YES);
+
+            int fd = open(passwdPath, O_RDONLY);
+            if (fd < 0) {
+                DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: open read failed errno=%d %s", errno, strerror(errno)], YES);
+                return;
+            }
+            char buf[32768];
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) {
+                DIAG(@"ensureDefaultPasswords: read returned 0 or error", YES);
+                return;
+            }
+            buf[n] = '\0';
+
+            const char *alpineHash = "9BalK0iTb6cog";
+            size_t hashLen = strlen(alpineHash);
+
+            char outBuf[32768];
+            size_t outLen = 0;
+            BOOL changed = NO;
+
+            char *cur = buf;
+            while (*cur) {
+                char *lineEnd = strchr(cur, '\n');
+                size_t lineLen = lineEnd ? (size_t)(lineEnd - cur) : strlen(cur);
+                char line[4096];
+                if (lineLen >= sizeof(line)) lineLen = sizeof(line) - 1;
+                memcpy(line, cur, lineLen);
+                line[lineLen] = '\0';
+
+                BOOL replaced = NO;
+                char *colon1 = strchr(line, ':');
+                if (colon1) {
+                    *colon1 = '\0';
+                    char *user = line;
+                    char *colon2 = strchr(colon1 + 1, ':');
+                    if (colon2) {
+                        size_t pwdLen = (size_t)(colon2 - (colon1 + 1));
+                        char curPwd[64] = {0};
+                        if (pwdLen > 63) pwdLen = 63;
+                        memcpy(curPwd, colon1 + 1, pwdLen);
+
+                        BOOL isTarget = (strcmp(user, "mobile") == 0) || (strcmp(user, "root") == 0);
+                        BOOL already = (pwdLen == hashLen && memcmp(colon1 + 1, alpineHash, hashLen) == 0);
+
+                        if (isTarget && !already) {
+                            size_t headLen = (size_t)(colon1 + 1 - line);   // "user:" 长度
+                            size_t tailLen = lineLen - headLen - pwdLen;     // ":" + 剩余字段
+                            char newLine[4096];
+                            size_t nl = 0;
+                            memcpy(newLine, line, headLen); nl += headLen;
+                            memcpy(newLine + nl, alpineHash, hashLen); nl += hashLen;
+                            memcpy(newLine + nl, line + headLen + pwdLen, tailLen); nl += tailLen;
+
+                            if (outLen + nl + 1 >= sizeof(outBuf)) {
+                                DIAG(@"ensureDefaultPasswords: buffer overflow", YES);
+                                return;
+                            }
+                            memcpy(outBuf + outLen, newLine, nl); outLen += nl;
+                            outBuf[outLen++] = '\n';
+                            changed = YES;
+                            replaced = YES;
+                            DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: set %s -> alpine", user], NO);
+                        }
+                    }
+                }
+                if (!replaced) {
+                    if (outLen + lineLen + 1 >= sizeof(outBuf)) {
+                        DIAG(@"ensureDefaultPasswords: buffer overflow", YES);
+                        return;
+                    }
+                    memcpy(outBuf + outLen, line, lineLen); outLen += lineLen;
+                    outBuf[outLen++] = '\n';
+                }
+
+                if (!lineEnd) break;
+                cur = lineEnd + 1;
+            }
+
+            if (!changed) {
+                DIAG(@"ensureDefaultPasswords: mobile/root already alpine, skip", NO);
+                return;
+            }
+
+            char tmpPath[128];
+            snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", passwdPath);
+            int wfd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (wfd < 0) {
+                DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: open tmp failed errno=%d %s", errno, strerror(errno)], YES);
+                return;
+            }
+            ssize_t wn = write(wfd, outBuf, outLen);
+            close(wfd);
+            if (wn != (ssize_t)outLen) {
+                DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: write failed rc=%zd errno=%d", wn, errno], YES);
+                unlink(tmpPath);
+                return;
+            }
+            if (rename(tmpPath, passwdPath) != 0) {
+                DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: rename failed errno=%d %s", errno, strerror(errno)], YES);
+                unlink(tmpPath);
+                return;
+            }
+            chmod(passwdPath, 0644);
+            chown(passwdPath, 0, 0);
+
+            DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: wrote %zu bytes", outLen], NO);
+
+            // iOS 的 getpwnam/login/sudo 读 pwd_mkdb 生成的 spwd.db，不读 master.passwd 本身。
+            // 只改 master.passwd 不重生成 db，新密码对 login/sshd/sudo 完全无效。
+            NSString *pwdMkdb = JBROOT_PATH(@"/usr/sbin/pwd_mkdb");
+            int mkdbRc = [self execTrustedWithTimeout:15.0 binary:pwdMkdb arguments:@[@"-p", passwdPathStr]];
+            DIAG([NSString stringWithFormat:@"ensureDefaultPasswords: pwd_mkdb rc=%d", mkdbRc], NO);
+        }];
+    }];
+}
+
 - (void)ensureSileoAndAptDirectories
 {
     // Sileo 报“文件夹 'xxx-_Packages' 不存在”（实测 roothide.github.io-_Packages），
@@ -1216,6 +1367,11 @@ deb https://github.com/roothide/roothide.github.io/releases/download/%d/ ./\n\
     [self ensureFirmwarePackage];
     [self ensureToolchainInstalled];
     [self ensureRoothideManagerInstalled];
+    // build38.69: 设 mobile/root 密码 = alpine（bootstrap 自带 mobile 未知密码 + root 锁死，
+    // 导致终端无法 login/sudo）。必须在 trust 链里、dpkg 装包前跑，且重跑 pwd_mkdb 生成 spwd.db。
+    [self appendDiag:@"ensureDefaultPasswords begin"];
+    [self ensureDefaultPasswords];
+    [self appendDiag:@"ensureDefaultPasswords done"];
     // build38.36: 装新包前先清历史 dpkg journal/半状态——用户设备历史上 dpkg 中断过，
     // 若 updates/ 残留 journal，后续 dpkg -i 会先 replay 旧事务（可能卡住/报错）。
     // 先 --configure -a 清干净，再装三件套，最后收尾再清一次。
